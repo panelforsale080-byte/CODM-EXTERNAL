@@ -1,0 +1,116 @@
+#pragma once
+#include "Hacks/StructGame/GameClass.h"
+
+typedef void* monoString;
+
+inline void* Transform_Find_Fast(void* transform, monoString* name) {
+    if (!libunity_base || !transform || !name) return nullptr;
+    return ((void* (*)(void*, monoString*))(libunity_base + 0x4E85AA4))(transform, name);
+}
+
+inline int Transform_GetChildCount_Fast(void* transform) {
+    if (!libunity_base || !transform) return 0;
+    return ((int (*)(void*))(libunity_base + 0x4E63D3C))(transform);
+}
+
+inline void* Transform_GetChild_Fast(void* transform, int index) {
+    if (!libunity_base || !transform) return nullptr;
+    return ((void* (*)(void*, int))(libunity_base + 0x4E63D10))(transform, index);
+}
+
+inline monoString* CreateMonoString_Fast(const char* str) {
+    if (!libunity_base || !str) return nullptr;
+    return ((monoString* (*)(void*, const char*))(libunity_base + 0x4CD78D0))(NULL, str);
+}
+
+inline void* FindRecursive_Fast(void* transform, monoString* monoName) {
+    if (!transform || !monoName) return nullptr;
+    void* found = Transform_Find_Fast(transform, monoName);
+    if (found) return found;
+    for (int i = 0; i < Transform_GetChildCount_Fast(transform); i++) {
+        void* child = Transform_GetChild_Fast(transform, i);
+        if (child) {
+            found = FindRecursive_Fast(child, monoName);
+            if (found) return found;
+        }
+    }
+    return nullptr;
+}
+
+inline void* GetBone_Fast(void* root, const char* name) {
+    if (!root || !name) return nullptr;
+    monoString* monoName = CreateMonoString_Fast(name);
+    if (!monoName) return nullptr;
+    return FindRecursive_Fast(root, monoName);
+}
+
+inline void DrawSkeleton(ImDrawList* draw, void* pawn) {
+    if (!draw || !pawn || !libunity_base) return;
+    
+    void* root = ComponentGetTransform_Fast((Component*)pawn);
+    if (!root) return;
+
+    Vector3 head = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Head"));
+    Vector3 neck = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Neck"));
+    Vector3 spine = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Spine"));
+    Vector3 spine1 = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Spine1"));
+    Vector3 spine2 = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Spine2"));
+    Vector3 hips = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_Hips"));
+    Vector3 lClav = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftClav"));
+    Vector3 lArm = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftArm"));
+    Vector3 lFore = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftForeArm"));
+    Vector3 lHand = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftHand"));
+    Vector3 rClav = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightClav"));
+    Vector3 rArm = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightArm"));
+    Vector3 rFore = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightForeArm"));
+    Vector3 rHand = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightHand"));
+    Vector3 lThigh = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftLegUpper"));
+    Vector3 lLeg = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftLeg"));
+    Vector3 lAnkle = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_LeftAnkle"));
+    Vector3 rThigh = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightLegUpper"));
+    Vector3 rLeg = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightLeg"));
+    Vector3 rAnkle = TransformGetPosition_Fast((Transform*)GetBone_Fast(root, "b_RightAnkle"));
+
+    Camera* cam = GetCameraMain_Fast();
+    if (!cam) return;
+
+    auto W2S = [&](Vector3 pos) -> ImVec2 {
+        Vector3 screen = WorldToScreen_Fast(cam, pos);
+        if (screen.z < 0.1f) return ImVec2(-9999, -9999);
+        return ImVec2(screen.x, glHeight - screen.y);
+    };
+
+    ImU32 color = IM_COL32(255, 255, 255, 200);
+
+    auto DrawLine = [&](Vector3 a, Vector3 b) {
+        if (a.x == 0 && a.y == 0 && a.z == 0) return;
+        if (b.x == 0 && b.y == 0 && b.z == 0) return;
+        ImVec2 sa = W2S(a);
+        ImVec2 sb = W2S(b);
+        if (sa.x < -500 || sa.x > glWidth + 500) return;
+        if (sb.x < -500 || sb.x > glWidth + 500) return;
+        if (sa.y < -500 || sa.y > glHeight + 500) return;
+        if (sb.y < -500 || sb.y > glHeight + 500) return;
+        draw->AddLine(sa, sb, color, 1.2f);
+    };
+
+    DrawLine(head, neck);
+    DrawLine(neck, spine2);
+    DrawLine(spine2, spine1);
+    DrawLine(spine1, spine);
+    DrawLine(spine, hips);
+    DrawLine(neck, lClav);
+    DrawLine(lClav, lArm);
+    DrawLine(lArm, lFore);
+    DrawLine(lFore, lHand);
+    DrawLine(neck, rClav);
+    DrawLine(rClav, rArm);
+    DrawLine(rArm, rFore);
+    DrawLine(rFore, rHand);
+    DrawLine(hips, lThigh);
+    DrawLine(lThigh, lLeg);
+    DrawLine(lLeg, lAnkle);
+    DrawLine(hips, rThigh);
+    DrawLine(rThigh, rLeg);
+    DrawLine(rLeg, rAnkle);
+}

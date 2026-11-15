@@ -1,19 +1,20 @@
-# CODM-EXTERNAL
+# CODM jnmaini (source)
 
-External overlay for **Garena CODM** (`com.garena.game.codm`), converted from **jnmaini.zip**.
+Native inject menu from **jnmaini.zip** — same `jni/` tree, no external overlay APK and no launcher login.
 
-- **No IL2CPP** in overlay — hardcoded `CLASS.h` / libunity RVAs + `remote_call`
-- **ANOGS**: auto `BYPASS` patch from `vendor/jnmaini/hooks.h` via `tools/sync_anogs_bypass.py`
-- **Unity gameplay hooks** (speed, recoil, etc.): still need in-process agent (jnmaini `hooking()`); ESP + anogs bypass work externally
+| Output | Path after build |
+|--------|------------------|
+| arm64 lib | `jni/libs/arm64-v8a/libZAGll.so` |
 
-## Sync anogs offsets after game update
-
-```bash
-python3 tools/sync_anogs_bypass.py
-```
-
-## Build
+## Build (local)
 
 ```bash
-./gradlew assembleRelease
+export ANDROID_NDK_HOME=/path/to/ndk
+$ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -C jni
 ```
+
+## Use
+
+Inject `libZAGll.so` into `com.garena.game.codm` the same way as the original jnmaini build. Menu is in-game (logo tap); hooks/offsets live in `jni/ImGui/hooks.h` and `jni/ImGui/CLASS.h`.
+
+CI uploads **libZAGll-arm64** on each push to `main`.

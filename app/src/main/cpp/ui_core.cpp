@@ -15,6 +15,8 @@
 #include <pthread.h>
 #include <thread>
 
+ImVec2 initialScreenSize{0.f, 0.f};
+
 static int g_w = 0, g_h = 0;
 static std::atomic<bool> g_menu{true};
 static std::atomic<bool> g_runReader{false};
@@ -83,6 +85,8 @@ void ui_gl_surface_created() {
 void ui_gl_surface_changed(int w, int h) {
     g_w = w;
     g_h = h;
+    if (initialScreenSize.x <= 0.f)
+        initialScreenSize = ImVec2((float)w, (float)h);
 }
 
 void ui_gl_surface_destroyed() {

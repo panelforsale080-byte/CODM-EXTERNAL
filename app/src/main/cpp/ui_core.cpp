@@ -78,8 +78,6 @@ static void reader_loop() {
                 lastScan = now;
                 pid_t better = proc_find_codm_best();
                 if (better > 0 && better != pid) {
-                    ProcCandidate one{};
-                    one.pid = better;
                     int u = 0, a = 0;
                     std::ifstream maps("/proc/" + std::to_string(better) + "/maps");
                     std::string line;

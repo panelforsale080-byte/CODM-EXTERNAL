@@ -6,6 +6,7 @@
 #include "proc.hpp"
 #include "remote_call.hpp"
 #include "ui_log.hpp"
+#include "jnmaini_ui/weapon_category_config.h"
 
 #include <algorithm>
 #include <atomic>
@@ -47,7 +48,7 @@ static bool pawn_list_ok(pid_t pid, uintptr_t list, int &size) {
     return true;
 }
 
-static bool looks_like_match(pid_t pid, uintptr_t obj, int *outSize = nullptr) {
+static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, int *outSize = nullptr) {
     if (outSize) *outSize = -1;
     if (!mem_ptr_ok(obj)) return false;
     uintptr_t klass = 0;
@@ -84,7 +85,7 @@ struct WalkRegs {
 };
 
 /** Walk get_MatchGame. TBNZ is taken: that path is the inited getter. Cold path is the class init call. */
-static bool walk_getter(pid_t pid, uintptr_t func, const uint32_t *ins, int n, int i, WalkRegs st, uintptr_t &slot,
+static bool __attribute__((unused)) walk_getter(pid_t pid, uintptr_t func, const uint32_t *ins, int n, int i, WalkRegs st, uintptr_t &slot,
                         int depth) {
     if (depth > 6) return false;
     for (; i < n; ++i) {
@@ -323,15 +324,34 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
         g_gameplayKlass = klass;
         if (slot_from_gameplay(pid, klass, slot)) return true;
     }
-    uint32_t ins[32] = {};
-    if (mem_read(pid, func, ins, sizeof(ins))) {
-        WalkRegs st;
-        if (walk_getter(pid, func, ins, 32, 0, st, slot, 0)) return true;
-    }
     if (!g_nameScanDone) {
         g_nameScanDone = true;
         ui_log("[esp] scanning libunity for GamePlay");
         if (klass_from_name_scan(pid, slot)) return true;
+    }
+    return false;
+}
+
+static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size) {
+    const uintptr_t prefer[] = {0x178, 0x160, 0x170, 0x168, 0x180, 0x188, 0x198, 0x1A0};
+    for (uintptr_t off : prefer) {
+        uintptr_t p = 0;
+        int sz = 0;
+        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz) && sz > 0) {
+            list = p;
+            size = sz;
+            return true;
+        }
+    }
+    for (uintptr_t off = 0x100; off <= 0x240; off += 8) {
+        uintptr_t p = 0;
+        int sz = 0;
+        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz) && sz > 0) {
+            list = p;
+            size = sz;
+            ui_log("[esp] pawn list at match+0x%llx size=%d", (unsigned long long)off, sz);
+            return true;
+        }
     }
     return false;
 }
@@ -381,23 +401,26 @@ static void basis_from_quat(float x, float y, float z, float w, float &fx, float
 
 struct UnityHook {
     const char *name;
+    const char *key;
+    bool slider;
     uintptr_t rva;
     uint8_t bytes[8];
+    uint8_t orig[8];
+    bool haveOrig;
+    bool applied;
 };
 
-static const UnityHook kUnityHooks[] = {
-        {"antikick", 0x73669C4, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_crouch", 0x66B882C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_shake", 0x669780C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_parachute", 0x5A88C48, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_recoil", 0xD535A6C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_spread", 0xD53408C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_reload", 0xC2B5B58, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_reload_start", 0xC2B5D88, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"no_reload_end", 0xC2B5F90, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"skip_tutorial", 0xCCC3240, {0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"fps120", 0xAFAC73C, {0x00, 0x0F, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
-        {"uav", 0x6AE9A70, {0x20, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
+static UnityHook g_unityHooksTable[] = {
+        {"uav", "ADVANCE::UAV", false, 0x6AE9A70, {0x20, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_shake", "NO::SHAKE", false, 0x669780C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_parachute", "NO::PARACHUTE", false, 0x5A88C48, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_crouch", "NO CROUCH", false, 0x66B882C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_recoil", "NO::RECOIL", true, 0xD535A6C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_spread", "NO::SPREAD", true, 0xD53408C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_reload", "NO::RELOAD", true, 0xC2B5B58, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_reload_start", "NO::RELOAD", true, 0xC2B5D88, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"no_reload_end", "NO::RELOAD", true, 0xC2B5F90, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"fps120", "FRAME120", false, 0xAFAC73C, {0x00, 0x0F, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
 };
 
 static int g_unityHooks = -1;
@@ -408,9 +431,13 @@ void codm_reset() {
     g_match = 0;
     g_matchSlot = 0;
     g_slotLocked = false;
-    g_unityHooks = -1;
+    g_unityHooks = 0;
     g_nameScanDone = false;
     g_gameplayKlass = 0;
+    for (auto &h : g_unityHooksTable) {
+        h.haveOrig = false;
+        h.applied = false;
+    }
     g_anogsPatched = false;
     g_anogsBypassN = 0;
 }
@@ -451,24 +478,44 @@ void codm_attach(pid_t pid) {
 
 bool codm_libs_ready() { return g_pid.load() > 0 && g_unity && g_anogs; }
 
+static bool unity_hook_wanted(const UnityHook &h) {
+    if (h.slider) {
+        const auto it = seekbarValues.raw().find(h.key);
+        return it != seekbarValues.raw().end() && it->second > 0.f;
+    }
+    return checkboxStates[h.key];
+}
+
 int codm_auto_patch_unity() {
     const pid_t pid = g_pid.load();
     if (!pid || !g_unity) return 0;
-    const size_t n = sizeof(kUnityHooks) / sizeof(kUnityHooks[0]);
-    ui_log("[unity] hooks.h start pid=%d libunity=0x%llx count=%zu", (int)pid, (unsigned long long)g_unity, n);
-    int ok = 0;
-    for (const auto &h : kUnityHooks) {
+    int applied = 0;
+    for (auto &h : g_unityHooksTable) {
+        const bool want = unity_hook_wanted(h);
         const uintptr_t addr = g_unity + h.rva;
-        if (mem_write(pid, addr, h.bytes, sizeof(h.bytes))) {
-            ++ok;
-            ui_log("[unity] %s OK @ 0x%llx via %s", h.name, (unsigned long long)addr, mem_write_error());
-        } else {
-            ui_log("[unity] %s FAIL @ 0x%llx (%s)", h.name, (unsigned long long)addr, mem_write_error());
+        if (want == h.applied) {
+            if (want) ++applied;
+            continue;
+        }
+        if (want) {
+            if (!h.haveOrig) {
+                if (!mem_read(pid, addr, h.orig, sizeof(h.orig))) continue;
+                h.haveOrig = true;
+            }
+            if (mem_write(pid, addr, h.bytes, sizeof(h.bytes))) {
+                h.applied = true;
+                ++applied;
+                ui_log("[unity] %s ON @ 0x%llx via %s", h.name, (unsigned long long)addr, mem_write_error());
+            } else {
+                ui_log("[unity] %s FAIL @ 0x%llx (%s)", h.name, (unsigned long long)addr, mem_write_error());
+            }
+        } else if (h.haveOrig && mem_write(pid, addr, h.orig, sizeof(h.orig))) {
+            h.applied = false;
+            ui_log("[unity] %s OFF — original restored", h.name);
         }
     }
-    g_unityHooks = ok;
-    ui_log("[unity] hooks.h done %d/%zu", ok, n);
-    return ok;
+    g_unityHooks = applied;
+    return applied;
 }
 
 int codm_unity_hook_count() { return g_unityHooks < 0 ? 0 : g_unityHooks; }
@@ -506,7 +553,7 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
-    if (g_unityHooks < 0) codm_auto_patch_unity();
+    codm_auto_patch_unity();
     if (!g_matchSlot) {
         uintptr_t slot = 0;
         if (resolve_match_slot(pid, g_unity + codm_off::kGameplay_get_MatchGame, slot)) {
@@ -543,40 +590,28 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
         return;
     }
-    if (!looks_like_match(pid, match)) {
+    uintptr_t listPtr = 0;
+    int size = 0;
+    if (!find_pawn_list(pid, match, listPtr, size)) {
         g_match = 0;
         static uintptr_t loggedBad = 0;
         if (loggedBad != match) {
             loggedBad = match;
-            uintptr_t list = 0;
-            int sz = -1;
-            mem_read(pid, match + codm_off::kEnemyPawns, list);
-            if (mem_ptr_ok(list)) mem_read(pid, list + 0x18, sz);
-            ui_log("[esp] ptr=0x%llx not a match list=0x%llx size=%d", (unsigned long long)match,
-                   (unsigned long long)list, sz);
+            ui_log("[esp] vm_read ptr=0x%llx has no pawn list", (unsigned long long)match);
         }
-        std::snprintf(out.status, sizeof(out.status), "match ptr rejected");
+        if (!g_gameplayKlass) {
+            g_matchSlot = 0;
+            g_slotLocked = false;
+        }
+        std::snprintf(out.status, sizeof(out.status), "vm_read — no pawn list yet");
         return;
     }
     if (g_match != match) {
         g_match = match;
-        ui_log("[esp] MatchGame=0x%llx enemies pending", (unsigned long long)match);
+        ui_log("[esp] vm_read MatchGame=0x%llx pawns=%d", (unsigned long long)match, size);
     }
     out.match = match;
-    uintptr_t listPtr = 0;
-    int size = 0;
-    const char *listName = "enemy";
-    mem_read(pid, match + codm_off::kEnemyPawns, listPtr);
-    pawn_list_ok(pid, listPtr, size);
-    if (size <= 0) {
-        uintptr_t all = 0;
-        int allSize = 0;
-        if (mem_read(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize) && allSize > 0) {
-            listPtr = all;
-            size = allSize;
-            listName = "all";
-        }
-    }
+    const char *listName = "pawns";
     out.enemies = size < 0 ? 0 : size;
     if (out.enemies > 0) g_slotLocked = true;
     uintptr_t items = 0;

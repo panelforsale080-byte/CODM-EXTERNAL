@@ -298,9 +298,7 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
                 ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f),
                                    "anogs hooks.h not applied — start ESP or Re-patch");
             if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
-            ImGui::SameLine();
-            if (ImGui::Button("Re-patch unity (hooks.h)")) codm_auto_patch_unity();
-            ImGui::Text("unity hooks %d", codm_unity_hook_count());
+            ImGui::Text("unity features on %d (menu toggles only)", codm_unity_hook_count());
             ImGui::SameLine();
             if (ImGui::Button("Copy logs all")) ui_log_copy_to_clipboard();
             ImGui::SameLine();

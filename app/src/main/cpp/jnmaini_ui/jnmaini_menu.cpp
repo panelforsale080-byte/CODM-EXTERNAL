@@ -2,6 +2,7 @@
 #include "things.h"
 #include "widgets.hpp"
 #include "weapon_category_config.h"
+#include "ui_maps.h"
 
 #include "Icon.h"
 #include "Iconcpp.h"

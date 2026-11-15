@@ -65,7 +65,7 @@ inline std::array<CatCfg, COUNT>& Store() {
 
 /* External overlay: UI-only maps (no in-game weapon category resolve). */
 inline bool IsGated(const std::string&) { return false; }
-inline int Held() { return UiCat(); }
+inline int Held() { return AR; }
 
 inline bool* BoolField(const std::string& k, int cat) {
     CatCfg& c = Store()[cat];

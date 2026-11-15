@@ -8,6 +8,7 @@ add_library(CodmExternal SHARED
     ui_core.cpp
     jnmaini_ui/jnmaini_menu.cpp
     jnmaini_ui/things.cpp
+    jnmaini_ui/overlay_actions.cpp
     jnmaini_ui/imgui_group_panel.cpp
     jnmaini_ui/ui_maps.cpp
     overlay_jni.cpp

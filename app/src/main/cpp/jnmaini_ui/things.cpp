@@ -1,5 +1,4 @@
 #include "imgui.h"
-#include "ui_core.hpp"
 #include <cstdio>
 #include <map>
 #include <string>
@@ -62,14 +61,14 @@ void DrawMacOSHeaderButtons() {
     draw->AddCircleFilled(ImVec2(circlePos.x + spacing, circlePos.y), radius, IM_COL32(255, 189, 47, 255));
     ImGui::SetCursorScreenPos(ImVec2(circlePos.x - radius, circlePos.y - radius));
     if (ImGui::InvisibleButton("closeBtn", ImVec2(radius * 2, radius * 2))) {
-        if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
+        jnmaini_request_overlay_pass_through();
     }
     ImGui::SetCursorScreenPos(ImVec2(circlePos.x + spacing - radius, circlePos.y - radius));
     if (ImGui::InvisibleButton("minBtn", ImVec2(radius * 2, radius * 2))) {
-        ui_minimize_menu();
-        ui_sync_menu_touch_state();
+        if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
     }
 }
+
 
 std::map<std::string, ImVec4> colorStates = {
     {"ENEMY", ImVec4(1.0f, 0.0f, 0.0f, 1.0f)},

@@ -29,6 +29,7 @@ static bool g_autoFind = true;
 static bool g_patchAnogs = true;
 static CodmFrame g_last{};
 static bool g_jnmaini_toggled = true;
+static std::atomic<bool> g_passThroughReq{false};
 
 static void attach_pid(pid_t p, const char *why) {
     char cmd[256];
@@ -138,6 +139,17 @@ void ui_minimize_menu() {
     g_menu.store(false);
     g_jnmaini_toggled = false;
 }
+
+void ui_collapse_main_panel() { g_jnmaini_toggled = false; }
+
+void ui_request_overlay_pass_through() {
+    g_jnmaini_toggled = false;
+    g_menu.store(false);
+    g_passThroughReq.store(true);
+}
+
+bool ui_take_overlay_pass_through_request() { return g_passThroughReq.exchange(false); }
+
 bool ui_menu_interactive() { return g_menu.load(); }
 bool ui_needs_continuous_gl() { return g_menu.load() || g_espOn.load(); }
 

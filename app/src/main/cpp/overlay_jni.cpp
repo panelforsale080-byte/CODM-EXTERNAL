@@ -41,7 +41,7 @@ Java_com_xorel_codm_external_NativeBridge_nativeSetDisplaySize(JNIEnv *, jclass,
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeGlSurfaceCreated(JNIEnv *, jclass) {
-    g_menuTouchNotified = true;
+    g_menuTouchNotified = false;
     ui_gl_surface_created();
 }
 
@@ -71,7 +71,11 @@ static void force_pass_through_notify() {
 extern "C" JNIEXPORT void JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) {
     ui_gl_draw_frame();
-    ui_sync_menu_touch_state();
+    if (ui_take_overlay_pass_through_request()) {
+        force_pass_through_notify();
+    } else {
+        ui_sync_menu_touch_state();
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

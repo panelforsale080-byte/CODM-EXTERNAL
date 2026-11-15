@@ -419,14 +419,6 @@ public class OverlayService extends Service {
         hideMenuVideoWindow();
         menuInteractive = false;
         applyMenuTouchFlags(false);
-        main.post(
-                () -> {
-                    try {
-                        NativeBridge.nativeMinimizeMenu();
-                    } catch (Throwable t) {
-                        Log.w(TAG, "post-attach minimize", t);
-                    }
-                });
     }
 
     private void scheduleFabHoldExit() {

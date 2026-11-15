@@ -4,7 +4,7 @@ Native inject menu from **jnmaini.zip** — same `jni/` tree, no external overla
 
 | Output | Path after build |
 |--------|------------------|
-| arm64 lib | `jni/libs/arm64-v8a/libZAGll.so` |
+| arm64 lib | `libs/arm64-v8a/libZAGll.so` |
 
 ## Build (local)
 

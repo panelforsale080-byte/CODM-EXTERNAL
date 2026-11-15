@@ -1,5 +1,6 @@
-jni/libs/
 jni/obj/
+libs/
+obj/
 *.so
 *.o
 .DS_Store

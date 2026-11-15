@@ -155,11 +155,7 @@ void ui_gl_draw_frame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w > 0 ? g_w : 1, g_h > 0 ? g_h : 1);
     ImGui::NewFrame();
-    if (g_menu.load()) {
-        if (!g_jnmaini_toggled) g_jnmaini_toggled = true;
-        jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
-        if (!g_jnmaini_toggled) g_menu.store(false);
-    }
+    if (g_menu.load()) jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }

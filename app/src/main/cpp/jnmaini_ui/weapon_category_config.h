@@ -63,30 +63,9 @@ inline std::array<CatCfg, COUNT>& Store() {
     return s;
 }
 
-inline bool IsGated(const std::string& k) {
-    static const std::unordered_set<std::string> keys = {
-        "HITBOX", "NO::SHAKE",
-        "AIM::ASSIST", "NO::RECOIL", "NO::RELOAD", "NO::SPREAD", "FAST::SCOPE"
-    };
-    return keys.count(k) != 0;
-}
-
-/* Held weapon category — only needs CategoryName from CLASS (1 offset) */
-inline int Held() {
-    auto local  = FastFuncs::Gameplay_get_LocalPawn_Fast;
-    auto weapon = FastFuncs::Pawn_get_CurrentWeapon_Fast;
-    auto cat    = FastFuncs::Inventory_get_CategoryName_Fast;
-    if (!local || !weapon || !cat) return AR;
-
-    Pawn* p = local();
-    if (!p) return AR;
-    void* w = weapon(p);  // Pawn* OK
-    if (!w) return AR;
-
-    int e = cat(w, nullptr);
-    if (e < 0 || e > 14) return AR;
-    return FromECat(e);
-}
+/* External overlay: UI-only maps (no in-game weapon category resolve). */
+inline bool IsGated(const std::string&) { return false; }
+inline int Held() { return UiCat(); }
 
 inline bool* BoolField(const std::string& k, int cat) {
     CatCfg& c = Store()[cat];

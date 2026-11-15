@@ -26,8 +26,8 @@ add_library(CodmExternal SHARED
     ${IMGUI_DIR}/imgui_impl_android.cpp
     ${IMGUI_DIR}/imgui_impl_opengl3.cpp)
 
-target_include_directories(CodmExternal PRIVATE ${IMGUI_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/jnmaini_ui
-        ${JNIMGUI_DIR})
+target_include_directories(CodmExternal PRIVATE ${IMGUI_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/jnmaini_ui)
 target_compile_definitions(CodmExternal PRIVATE IMGUI_IMPL_OPENGL_ES2 GLES_SILENCE_DEPRECATION
         IMGUI_VERSION)
 

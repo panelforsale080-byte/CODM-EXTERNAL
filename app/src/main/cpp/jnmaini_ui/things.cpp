@@ -62,7 +62,7 @@ void DrawMacOSHeaderButtons() {
     draw->AddCircleFilled(ImVec2(circlePos.x + spacing, circlePos.y), radius, IM_COL32(255, 189, 47, 255));
     ImGui::SetCursorScreenPos(ImVec2(circlePos.x - radius, circlePos.y - radius));
     if (ImGui::InvisibleButton("closeBtn", ImVec2(radius * 2, radius * 2))) {
-        jnmaini_request_overlay_pass_through();
+        if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
     }
     ImGui::SetCursorScreenPos(ImVec2(circlePos.x + spacing - radius, circlePos.y - radius));
     if (ImGui::InvisibleButton("minBtn", ImVec2(radius * 2, radius * 2))) {

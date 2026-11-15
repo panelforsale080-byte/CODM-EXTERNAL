@@ -97,7 +97,7 @@ static void draw_logo_hud(bool& isToggled) {
         float radius = size * 0.5f;
         ImVec2 pos = ImGui::GetCursorScreenPos();
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-        if (ImGui::InvisibleButton("logo_btn", ImVec2(size, size))) isToggled = !isToggled;
+        if (ImGui::InvisibleButton("logo_btn", ImVec2(size, size))) isToggled = true;
         draw_list->AddCircleFilled(ImVec2(pos.x + radius, pos.y + radius), radius, IM_COL32(107, 112, 166, 255));
         draw_list->AddLine(ImVec2(pos.x + size + 4, pos.y + size), ImVec2(pos.x + size + 18, pos.y + 2),
                           IM_COL32(255, 255, 255, 255), 1.4f);

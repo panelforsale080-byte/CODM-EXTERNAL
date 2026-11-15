@@ -1,9 +1,16 @@
 if (isToggled)
 {
    
+ImVec2 disp = ImGui::GetIO().DisplaySize;
+float mw = disp.x > 40.f ? disp.x * 0.92f : 830.f;
+float mh = disp.y > 40.f ? disp.y * 0.72f : 500.f;
+if (mw > 830.f) mw = 830.f;
+if (mh > 500.f) mh = 500.f;
+if (mw < 280.f) mw = 280.f;
+if (mh < 220.f) mh = 220.f;
 ImVec2 center2 = ImGui::GetMainViewport()->GetCenter();
 ImGui::SetNextWindowPos(center2, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-ImGui::SetNextWindowSize(ImVec2(830, 500)); 
+ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_Appearing); 
 if (ImFont* __menuTitle = jnmaini_title_font()) ImGui::PushFont(__menuTitle);
 if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
 {

@@ -251,9 +251,10 @@ public class OverlayService extends Service {
                     if (!glReadyOnce) {
                         glReadyOnce = true;
                         try {
-                            NativeBridge.nativeMinimizeMenu();
+                            setMenuTouch(true);
+                            NativeBridge.nativeOpenMenu();
                         } catch (Throwable t) {
-                            Log.w(TAG, "nativeMinimizeMenu", t);
+                            Log.w(TAG, "open menu", t);
                         }
                     }
                     flushPendingCmd();
@@ -641,8 +642,8 @@ public class OverlayService extends Service {
             Log.w(TAG, "applyMenuTouchFlags surface", t);
         }
         if (fabLogo != null) {
-            fabLogo.setVisibility(interactive ? View.GONE : View.VISIBLE);
-            if (!interactive && fabLp != null) {
+            fabLogo.setVisibility(View.VISIBLE);
+            if (fabLp != null) {
                 clampFabToScreen();
                 try {
                     wm.updateViewLayout(fabLogo, fabLp);
@@ -655,11 +656,9 @@ public class OverlayService extends Service {
         if (!interactive) hideMenuVideoWindow();
         if (glView != null) {
             glView.requestRender();
-            if (!interactive) {
-                main.postDelayed(glView::requestRender, 33);
-                main.postDelayed(glView::requestRender, 66);
-                main.postDelayed(glView::requestRender, 120);
-            }
+            main.postDelayed(glView::requestRender, 33);
+            main.postDelayed(glView::requestRender, 66);
+            main.postDelayed(glView::requestRender, 120);
         }
     }
 

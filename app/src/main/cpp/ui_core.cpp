@@ -20,7 +20,7 @@
 ImVec2 initialScreenSize{0.f, 0.f};
 
 static int g_w = 0, g_h = 0;
-static std::atomic<bool> g_menu{false};
+static std::atomic<bool> g_menu{true};
 static std::atomic<bool> g_glReady{false};
 static std::atomic<bool> g_runReader{false};
 static std::atomic<bool> g_espOn{false};
@@ -85,7 +85,7 @@ void ui_gl_surface_created() {
     ImGui::CreateContext();
     jnmaini_style_init_once();
     ImGui_ImplAndroid_Init(nullptr);
-    ImGui_ImplOpenGL3_Init("#version 300 es");
+    ImGui_ImplOpenGL3_Init("#version 100");
     ImGui_ImplOpenGL3_CreateFontsTexture();
     ui_log("[ui] GL + jnmaini fonts ready");
 }

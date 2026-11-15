@@ -89,3 +89,6 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeIsEspActive(JNIEnv *, jclass) {
     return ui_esp_is_active() ? JNI_TRUE : JNI_FALSE;
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeHeroComboPulse(JNIEnv *, jclass) {}

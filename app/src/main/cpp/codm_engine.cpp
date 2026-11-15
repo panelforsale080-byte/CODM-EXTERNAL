@@ -6,11 +6,12 @@
 #include "proc.hpp"
 #include "remote_call.hpp"
 #include "ui_log.hpp"
-#include "jnmaini_ui/weapon_category_config.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 static std::atomic<pid_t> g_pid{0};
 static uintptr_t g_unity = 0;
@@ -21,6 +22,8 @@ static int g_anogsBypassN = 0;
 static uintptr_t g_match = 0;
 static uintptr_t g_matchSlot = 0;
 static bool g_slotLocked = false;
+static bool g_nameScanDone = false;
+static uintptr_t g_gameplayKlass = 0;
 
 static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -202,11 +205,135 @@ static bool walk_getter(pid_t pid, uintptr_t func, const uint32_t *ins, int n, i
     return true;
 }
 
-static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
+static bool slot_from_gameplay(pid_t pid, uintptr_t klass, uintptr_t &slot) {
+    if (!named_klass(pid, klass, "GamePlay")) return false;
+    const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8};
+    for (uintptr_t off : offs) {
+        uintptr_t sf = 0;
+        if (!mem_read(pid, klass + off, sf) || !mem_ptr_ok(sf)) continue;
+        slot = sf + codm_off::kMatchGameField;
+        ui_log("[esp] GamePlay klass=0x%llx static+0x%llx slot=0x%llx", (unsigned long long)klass,
+               (unsigned long long)off, (unsigned long long)slot);
+        return true;
+    }
+    return false;
+}
+
+static bool klass_from_getter_globals(pid_t pid, uintptr_t func, uintptr_t &klass) {
     uint32_t ins[32] = {};
     if (!mem_read(pid, func, ins, sizeof(ins))) return false;
-    WalkRegs st;
-    return walk_getter(pid, func, ins, 32, 0, st, slot, 0);
+    uintptr_t reg[32] = {};
+    bool known[32] = {};
+    for (int i = 0; i < 32; ++i) {
+        const uint32_t insn = ins[i];
+        const int rd = insn & 31;
+        const int rn = (insn >> 5) & 31;
+        uintptr_t page = 0;
+        if (arm64_adrp(insn, func + (uintptr_t)i * 4, page)) {
+            reg[rd] = page;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFF800000u) == 0x91000000u && known[rn]) {
+            uint32_t imm = (insn >> 10) & 0xFFF;
+            if (((insn >> 22) & 3) == 1) imm <<= 12;
+            reg[rd] = reg[rn] + imm;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFFC00000u) != 0xF9400000u || !known[rn]) continue;
+        const uintptr_t src = reg[rn] + (((insn >> 10) & 0xFFF) * 8u);
+        uintptr_t val = 0;
+        if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
+            known[rd] = false;
+            continue;
+        }
+        if (named_klass(pid, val, "GamePlay")) {
+            klass = val;
+            return true;
+        }
+        uintptr_t inner = 0;
+        if (mem_read(pid, val, inner) && named_klass(pid, inner, "GamePlay")) {
+            klass = inner;
+            return true;
+        }
+        reg[rd] = val;
+        known[rd] = true;
+    }
+    return false;
+}
+
+static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
+    std::vector<MapsReg> maps;
+    if (!mem_get_maps(pid, maps)) return false;
+    const char sig[] = {'G', 'a', 'm', 'e', 'P', 'l', 'a', 'y', 0};
+    std::vector<uintptr_t> strings;
+    std::vector<uint8_t> buf(512 * 1024);
+    for (const auto &r : maps) {
+        if (r.path.find("libunity.so") == std::string::npos || r.perms[0] != 'r') continue;
+        for (uintptr_t a = r.start; a + sizeof(sig) < r.end && strings.size() < 8;) {
+            const size_t n = std::min(buf.size(), (size_t)(r.end - a));
+            if (!mem_read(pid, a, buf.data(), n)) {
+                a += n ? n : 4096;
+                continue;
+            }
+            for (size_t i = 0; i + sizeof(sig) <= n && strings.size() < 8; ++i) {
+                if (std::memcmp(buf.data() + i, sig, sizeof(sig)) != 0) continue;
+                if (i > 0 && buf[i - 1] != 0) continue;
+                strings.push_back(a + i);
+            }
+            a += n > sizeof(sig) ? n - sizeof(sig) : n;
+        }
+    }
+    if (strings.empty()) return false;
+    ui_log("[esp] GamePlay string hits=%zu first=0x%llx", strings.size(), (unsigned long long)strings[0]);
+    for (uintptr_t str : strings) {
+        uint8_t needle[8];
+        std::memcpy(needle, &str, 8);
+        for (const auto &r : maps) {
+            if (r.path.find("libunity.so") == std::string::npos || r.perms[0] != 'r') continue;
+            for (uintptr_t a = r.start; a + 8 < r.end;) {
+                const size_t n = std::min(buf.size(), (size_t)(r.end - a));
+                if (!mem_read(pid, a, buf.data(), n)) {
+                    a += n ? n : 4096;
+                    continue;
+                }
+                for (size_t i = 0; i + 8 <= n; i += 8) {
+                    if (std::memcmp(buf.data() + i, needle, 8) != 0) continue;
+                    const uintptr_t site = a + i;
+                    for (uintptr_t off = 0x10; off <= 0x48; off += 8) {
+                        if (site < off) continue;
+                        const uintptr_t cand = site - off;
+                        if (!named_klass(pid, cand, "GamePlay")) continue;
+                        g_gameplayKlass = cand;
+                        if (slot_from_gameplay(pid, cand, klass)) return true;
+                    }
+                }
+                a += n > 8 ? n - 8 : n;
+            }
+        }
+    }
+    return false;
+}
+
+static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
+    if (g_gameplayKlass && slot_from_gameplay(pid, g_gameplayKlass, slot)) return true;
+    uintptr_t klass = 0;
+    if (klass_from_getter_globals(pid, func, klass)) {
+        g_gameplayKlass = klass;
+        if (slot_from_gameplay(pid, klass, slot)) return true;
+    }
+    uint32_t ins[32] = {};
+    if (mem_read(pid, func, ins, sizeof(ins))) {
+        WalkRegs st;
+        if (walk_getter(pid, func, ins, 32, 0, st, slot, 0)) return true;
+    }
+    if (!g_nameScanDone) {
+        g_nameScanDone = true;
+        ui_log("[esp] scanning libunity for GamePlay");
+        if (klass_from_name_scan(pid, slot)) return true;
+    }
+    return false;
 }
 
 static bool read_vec3(pid_t pid, uintptr_t addr, float &x, float &y, float &z) {
@@ -252,61 +379,28 @@ static void basis_from_quat(float x, float y, float z, float w, float &fx, float
     uz = 2.f * (y * z + w * x);
 }
 
-struct FeatPatch {
+struct UnityHook {
     const char *name;
     uintptr_t rva;
     uint8_t bytes[8];
-    bool slider;
-    const char *key;
-    float sliderMin;
-    uint8_t orig[8];
-    bool haveOrig;
-    bool applied;
 };
 
-static FeatPatch g_feats[] = {
-    {"uav", 0x6AE9A70, {0x20, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}, false, "ADVANCE::UAV", 0.f, {}, false, false},
-    {"shake", 0x669780C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, false, "NO::SHAKE", 0.f, {}, false, false},
-    {"recoil", 0xD535A6C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, true, "NO::RECOIL", 1.f, {}, false, false},
-    {"spread", 0xD53408C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, true, "NO::SPREAD", 1.f, {}, false, false},
-    {"reload", 0xC2B5B58, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, true, "NO::RELOAD", 1.f, {}, false, false},
-    {"reload2", 0xC2B5D88, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, true, "NO::RELOAD", 1.f, {}, false, false},
-    {"reload3", 0xC2B5F90, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, true, "NO::RELOAD", 1.f, {}, false, false},
-    {"chute", 0x5A88C48, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, false, "NO::PARACHUTE", 0.f, {}, false, false},
-    {"crouch", 0x66B882C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, false, "NO CROUCH", 0.f, {}, false, false},
+static const UnityHook kUnityHooks[] = {
+        {"antikick", 0x73669C4, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_crouch", 0x66B882C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_shake", 0x669780C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_parachute", 0x5A88C48, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_recoil", 0xD535A6C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_spread", 0xD53408C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_reload", 0xC2B5B58, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_reload_start", 0xC2B5D88, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"no_reload_end", 0xC2B5F90, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"skip_tutorial", 0xCCC3240, {0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"fps120", 0xAFAC73C, {0x00, 0x0F, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
+        {"uav", 0x6AE9A70, {0x20, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}},
 };
 
-static bool feat_wanted(const FeatPatch &f) {
-    if (f.slider) {
-        const auto it = seekbarValues.raw().find(f.key);
-        return it != seekbarValues.raw().end() && it->second >= f.sliderMin;
-    }
-    return checkboxStates[f.key];
-}
-
-static void sync_feature_patches(pid_t pid, uintptr_t unity) {
-    if (!pid || !unity) return;
-    for (auto &f : g_feats) {
-        const bool want = feat_wanted(f);
-        const uintptr_t addr = unity + f.rva;
-        if (want == f.applied) continue;
-        if (want) {
-            if (!f.haveOrig) {
-                if (!mem_read(pid, addr, f.orig, sizeof(f.orig))) continue;
-                f.haveOrig = true;
-            }
-            if (mem_write(pid, addr, f.bytes, sizeof(f.bytes))) {
-                f.applied = true;
-                ui_log("[feat] %s OK @ 0x%llx via %s", f.name, (unsigned long long)addr, mem_write_error());
-            } else {
-                ui_log("[feat] %s FAIL @ 0x%llx (%s)", f.name, (unsigned long long)addr, mem_write_error());
-            }
-        } else if (f.haveOrig && mem_write(pid, addr, f.orig, sizeof(f.orig))) {
-            f.applied = false;
-            ui_log("[feat] %s OFF", f.name);
-        }
-    }
-}
+static int g_unityHooks = -1;
 
 void codm_reset() {
     g_pid.store(0);
@@ -314,10 +408,9 @@ void codm_reset() {
     g_match = 0;
     g_matchSlot = 0;
     g_slotLocked = false;
-    for (auto &f : g_feats) {
-        f.haveOrig = false;
-        f.applied = false;
-    }
+    g_unityHooks = -1;
+    g_nameScanDone = false;
+    g_gameplayKlass = 0;
     g_anogsPatched = false;
     g_anogsBypassN = 0;
 }
@@ -358,6 +451,28 @@ void codm_attach(pid_t pid) {
 
 bool codm_libs_ready() { return g_pid.load() > 0 && g_unity && g_anogs; }
 
+int codm_auto_patch_unity() {
+    const pid_t pid = g_pid.load();
+    if (!pid || !g_unity) return 0;
+    const size_t n = sizeof(kUnityHooks) / sizeof(kUnityHooks[0]);
+    ui_log("[unity] hooks.h start pid=%d libunity=0x%llx count=%zu", (int)pid, (unsigned long long)g_unity, n);
+    int ok = 0;
+    for (const auto &h : kUnityHooks) {
+        const uintptr_t addr = g_unity + h.rva;
+        if (mem_write(pid, addr, h.bytes, sizeof(h.bytes))) {
+            ++ok;
+            ui_log("[unity] %s OK @ 0x%llx via %s", h.name, (unsigned long long)addr, mem_write_error());
+        } else {
+            ui_log("[unity] %s FAIL @ 0x%llx (%s)", h.name, (unsigned long long)addr, mem_write_error());
+        }
+    }
+    g_unityHooks = ok;
+    ui_log("[unity] hooks.h done %d/%zu", ok, n);
+    return ok;
+}
+
+int codm_unity_hook_count() { return g_unityHooks < 0 ? 0 : g_unityHooks; }
+
 bool codm_auto_patch_anogs() {
     const pid_t pid = g_pid.load();
     if (!pid) {
@@ -391,6 +506,7 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
+    if (g_unityHooks < 0) codm_auto_patch_unity();
     if (!g_matchSlot) {
         uintptr_t slot = 0;
         if (resolve_match_slot(pid, g_unity + codm_off::kGameplay_get_MatchGame, slot)) {
@@ -422,7 +538,7 @@ void codm_tick(CodmFrame &out) {
         static bool loggedEmpty = false;
         if (!loggedEmpty) {
             loggedEmpty = true;
-            ui_log("[esp] s_MatchGame empty (lobby) — features wait for a match");
+            ui_log("[esp] s_MatchGame empty (lobby)");
         }
         std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
         return;
@@ -442,7 +558,6 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "match ptr rejected");
         return;
     }
-    sync_feature_patches(pid, g_unity);
     if (g_match != match) {
         g_match = match;
         ui_log("[esp] MatchGame=0x%llx enemies pending", (unsigned long long)match);

@@ -35,5 +35,7 @@ void codm_attach(pid_t pid);
 void codm_reset();
 void codm_tick(CodmFrame &out);
 bool codm_auto_patch_anogs();
+int codm_auto_patch_unity();
+int codm_unity_hook_count();
 bool codm_anogs_hooks_patched();
 int codm_anogs_last_bypass_count();

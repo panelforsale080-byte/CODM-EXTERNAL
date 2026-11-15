@@ -50,7 +50,10 @@ static void attach_pid(pid_t p, const char *why) {
     if (!probe) return;
     codm_attach(p);
     g_wantPid.store(p);
-    if (g_patchAnogs) codm_auto_patch_anogs();
+    if (g_patchAnogs) {
+        codm_auto_patch_anogs();
+        codm_auto_patch_unity();
+    }
 }
 
 static void reader_loop() {
@@ -96,7 +99,10 @@ static void reader_loop() {
                 if (!codm_libs_ready()) {
                     ui_log("[codm] libs not mapped yet — reread /proc/%d/maps", (int)pid);
                     codm_attach(pid);
-                    if (codm_libs_ready() && g_patchAnogs) codm_auto_patch_anogs();
+                    if (codm_libs_ready() && g_patchAnogs) {
+                        codm_auto_patch_anogs();
+                        codm_auto_patch_unity();
+                    }
                 }
             }
         }
@@ -207,12 +213,15 @@ void jnmaini_draw_external_panel() {
     ImGui::SameLine();
     if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
     ImGui::SameLine();
+    if (ImGui::Button("Re-patch unity (hooks.h)")) codm_auto_patch_unity();
+    ImGui::SameLine();
     if (ImGui::Button("Copy logs all")) ui_log_copy_to_clipboard();
     if (codm_anogs_hooks_patched())
         ImGui::TextColored(ImVec4(0.3f, 1.f, 0.4f, 1.f), "hooks.h BYPASS OK (%d/4)",
                            codm_anogs_last_bypass_count());
     else
         ImGui::Text("hooks.h not applied yet");
+    ImGui::Text("unity hooks %d", codm_unity_hook_count());
     const pid_t pid = g_wantPid.load();
     ImGui::Text("PID %d | %s", (int)pid, g_last.status[0] ? g_last.status : "idle");
     ImGui::Text("unity=0x%llx anogs=0x%llx enemies=%d", (unsigned long long)g_last.unity,

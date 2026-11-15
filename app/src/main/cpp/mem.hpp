@@ -35,6 +35,8 @@ bool mem_is_readable(pid_t pid, uintptr_t addr, size_t len);
 
 bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n);
 bool mem_write(pid_t pid, uintptr_t addr, const void *buf, size_t n);
+/** Last mem_write failure, e.g. "vm=EPERM proc=EACCES ptrace=EPERM". */
+const char *mem_write_error();
 
 template <typename T>
 inline bool mem_read(pid_t pid, uintptr_t addr, T &out) {

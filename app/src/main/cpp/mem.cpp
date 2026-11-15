@@ -1,9 +1,14 @@
 #include "mem.hpp"
 #include "external_esp_read.hpp"
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 #include <cstdio>
 #include <fstream>
 #include <mutex>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
 
 static std::mutex g_mapsMu;
 static pid_t g_mapsPid = 0;
@@ -88,9 +93,86 @@ bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n) {
     return ret == (ssize_t)n;
 }
 
+static char g_writeErr[160] = "ok";
+
+const char *mem_write_error() { return g_writeErr; }
+
+static bool write_proc_mem(pid_t pid, uintptr_t addr, const void *buf, size_t n) {
+    char path[64];
+    std::snprintf(path, sizeof(path), "/proc/%d/mem", (int)pid);
+    const int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return false;
+    const ssize_t w = pwrite(fd, buf, n, (off_t)addr);
+    close(fd);
+    return w == (ssize_t)n;
+}
+
+static bool write_ptrace(pid_t pid, uintptr_t addr, const void *buf, size_t n) {
+    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, __WALL) < 0) {
+        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        return false;
+    }
+    bool ok = true;
+    const auto *src = static_cast<const uint8_t *>(buf);
+    uintptr_t a = addr;
+    size_t left = n;
+    while (left && ok) {
+        const uintptr_t aligned = a & ~7ULL;
+        errno = 0;
+        const long word = ptrace(PTRACE_PEEKTEXT, pid, reinterpret_cast<void *>(aligned), nullptr);
+        if (errno) {
+            ok = false;
+            break;
+        }
+        uint8_t bytes[8];
+        std::memcpy(bytes, &word, 8);
+        const size_t off = (size_t)(a - aligned);
+        const size_t chunk = std::min(left, (size_t)8 - off);
+        std::memcpy(bytes + off, src, chunk);
+        long out = 0;
+        std::memcpy(&out, bytes, 8);
+        if (ptrace(PTRACE_POKETEXT, pid, reinterpret_cast<void *>(aligned), reinterpret_cast<void *>(out)) < 0)
+            ok = false;
+        a += chunk;
+        src += chunk;
+        left -= chunk;
+    }
+    ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+    return ok;
+}
+
 bool mem_write(pid_t pid, uintptr_t addr, const void *buf, size_t n) {
-    if (!pid || !addr || !buf || !n) return false;
+    g_writeErr[0] = '\0';
+    if (!pid || !addr || !buf || !n) {
+        std::snprintf(g_writeErr, sizeof(g_writeErr), "bad args");
+        return false;
+    }
     iovec local{(void *)buf, n};
     iovec remote{(void *)addr, n};
-    return mem_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)n;
+    errno = 0;
+    if (mem_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)n) {
+        std::snprintf(g_writeErr, sizeof(g_writeErr), "vmwrite");
+        return true;
+    }
+    const int eVm = errno ? errno : EIO;
+    errno = 0;
+    if (write_proc_mem(pid, addr, buf, n)) {
+        std::snprintf(g_writeErr, sizeof(g_writeErr), "procmem");
+        return true;
+    }
+    const int eProc = errno ? errno : EIO;
+    errno = 0;
+    if (write_ptrace(pid, addr, buf, n)) {
+        std::snprintf(g_writeErr, sizeof(g_writeErr), "ptrace");
+        return true;
+    }
+    const int ePtr = errno ? errno : EIO;
+    char sVm[32], sProc[32], sPtr[32];
+    std::snprintf(sVm, sizeof(sVm), "%s", std::strerror(eVm));
+    std::snprintf(sProc, sizeof(sProc), "%s", std::strerror(eProc));
+    std::snprintf(sPtr, sizeof(sPtr), "%s", std::strerror(ePtr));
+    std::snprintf(g_writeErr, sizeof(g_writeErr), "vm=%s proc=%s ptrace=%s", sVm, sProc, sPtr);
+    return false;
 }

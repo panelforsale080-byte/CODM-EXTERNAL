@@ -176,6 +176,8 @@ void jnmaini_draw_external_panel() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy logs all")) ui_log_copy_to_clipboard();
     if (codm_anogs_hooks_patched())
         ImGui::TextColored(ImVec4(0.3f, 1.f, 0.4f, 1.f), "hooks.h BYPASS OK (%d/4)",
                            codm_anogs_last_bypass_count());

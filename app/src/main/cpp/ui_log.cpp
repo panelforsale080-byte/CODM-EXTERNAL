@@ -1,4 +1,5 @@
 #include "ui_log.hpp"
+#include "clip_android.hpp"
 #include "imgui.h"
 #include <cstdarg>
 #include <cstring>
@@ -47,6 +48,24 @@ void ui_log_copy_all(char *dst, size_t cap) {
         used += ln.size();
     }
     dst[used] = '\0';
+}
+
+bool ui_log_copy_to_clipboard() {
+    std::string all;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        for (size_t i = 0; i < g_lines.size(); ++i) {
+            if (i) all.push_back('\n');
+            all += g_lines[i];
+        }
+    }
+    if (all.empty()) all = "(no logs)";
+    if (!android_copy_to_clipboard(all.c_str())) {
+        ui_log("[log] copy FAILED");
+        return false;
+    }
+    ui_log("[log] copied %zu chars to clipboard", all.size());
+    return true;
 }
 
 void ui_log_imgui_panel() { ui_log_imgui_panel_ex(180.f); }

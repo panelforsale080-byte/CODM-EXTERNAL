@@ -299,6 +299,8 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
                                    "anogs hooks.h not applied — start ESP or Re-patch");
             if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
             ImGui::SameLine();
+            if (ImGui::Button("Copy logs all")) ui_log_copy_to_clipboard();
+            ImGui::SameLine();
             if (ImGui::Button("Clear log")) ui_log_clear();
             ImGui::Spacing();
             ui_log_imgui_panel_ex(-1.f);

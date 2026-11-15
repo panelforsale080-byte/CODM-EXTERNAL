@@ -1,6 +1,7 @@
 #include "anogs_patch.hpp"
 #include "mem.hpp"
 #include "ui_log.hpp"
+#include <vector>
 
 #include <android/log.h>
 #include <cstdio>
@@ -40,15 +41,27 @@ int anogs_apply_bypass(pid_t pid, uintptr_t base, char *log, size_t logCap) {
     for (size_t i = 0; i < n; ++i) {
         const uint32_t off = kBypassOff[i];
         const uintptr_t addr = base + off;
+        char perms[8] = "?";
+        std::vector<MapsReg> maps;
+        if (mem_get_maps(pid, maps)) {
+            for (const auto &r : maps) {
+                if (addr >= r.start && addr + sizeof(kArm64Mov0Ret) <= r.end) {
+                    std::snprintf(perms, sizeof(perms), "%s", r.perms);
+                    break;
+                }
+            }
+        }
         if (mem_write(pid, addr, kArm64Mov0Ret, sizeof(kArm64Mov0Ret))) {
             ++ok;
-            ui_log("[anogs] hooks.h %s OK @ 0x%llx", kBypassSym[i], (unsigned long long)addr);
+            ui_log("[anogs] hooks.h %s OK @ 0x%llx via %s perms=%s", kBypassSym[i],
+                   (unsigned long long)addr, mem_write_error(), perms);
             __android_log_print(ANDROID_LOG_INFO, CODMTAG, "%s OK addr=0x%llx", kBypassSym[i],
                                 (unsigned long long)addr);
             if (log && logCap)
                 std::snprintf(log, logCap, "%s OK", kBypassSym[i]);
         } else {
-            ui_log("[anogs] hooks.h %s FAIL write", kBypassSym[i]);
+            ui_log("[anogs] hooks.h %s FAIL @ 0x%llx perms=%s (%s)", kBypassSym[i],
+                   (unsigned long long)addr, perms, mem_write_error());
             __android_log_print(ANDROID_LOG_WARN, CODMTAG, "%s FAIL", kBypassSym[i]);
         }
     }

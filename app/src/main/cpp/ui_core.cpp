@@ -11,6 +11,7 @@
 
 #include <android/input.h>
 #include <EGL/egl.h>
+#include <GLES3/gl3.h>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -85,9 +86,8 @@ void ui_gl_surface_created() {
     ImGui::CreateContext();
     jnmaini_style_init_once();
     ImGui_ImplAndroid_Init(nullptr);
-    ImGui_ImplOpenGL3_Init("#version 100");
-    ImGui_ImplOpenGL3_CreateFontsTexture();
-    ui_log("[ui] GL + jnmaini fonts ready");
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+    ui_log("[ui] GLES3 + jnmaini fonts ready");
 }
 
 void ui_gl_surface_changed(int w, int h) {
@@ -187,6 +187,9 @@ void jnmaini_draw_external_panel() {
 
 void ui_gl_draw_frame() {
     if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
+    glViewport(0, 0, g_w, g_h);
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w, g_h);
     ImGui::NewFrame();

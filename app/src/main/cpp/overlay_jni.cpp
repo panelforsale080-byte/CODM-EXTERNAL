@@ -68,14 +68,25 @@ static void force_pass_through_notify() {
     g_menuTouchNotified = false;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) {
-    ui_gl_draw_frame();
+void ui_finish_gl_frame() {
     if (ui_take_overlay_pass_through_request()) {
         force_pass_through_notify();
     } else {
         ui_sync_menu_touch_state();
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) {}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeAttachWindow(JNIEnv *env, jclass, jobject surface) {
+    ui_attach_native_window(env, surface);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeDetachWindow(JNIEnv *, jclass) {
+    ui_detach_native_window();
 }
 
 extern "C" JNIEXPORT void JNICALL

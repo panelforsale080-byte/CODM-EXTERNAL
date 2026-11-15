@@ -1,5 +1,5 @@
 #pragma once
-#include <android/native_window.h>
+#include <jni.h>
 #include "imgui.h"
 
 void ui_set_display_size(int w, int h);
@@ -22,3 +22,6 @@ void ui_esp_stop();
 bool ui_esp_is_active();
 bool ui_needs_continuous_gl();
 void ui_sync_menu_touch_state();
+void ui_finish_gl_frame();
+void ui_attach_native_window(JNIEnv *env, jobject surface);
+void ui_detach_native_window();

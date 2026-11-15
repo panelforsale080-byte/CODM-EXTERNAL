@@ -13,6 +13,9 @@ public final class NativeBridge {
     public static native void nativeGlSurfaceChanged(int w, int h);
     public static native void nativeGlSurfaceDestroyed();
     public static native void nativeGlDrawFrame();
+    /** Native GLES3 ImGui thread (same GLSL as jnmaini eglSwapBuffers). */
+    public static native void nativeAttachWindow(Object surface);
+    public static native void nativeDetachWindow();
 
     public static native void nativeTouch(int action, float x, float y);
     public static native void nativeOpenMenu();

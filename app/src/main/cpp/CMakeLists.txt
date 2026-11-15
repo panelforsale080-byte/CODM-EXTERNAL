@@ -20,6 +20,7 @@ add_library(CodmExternal SHARED
     remote_call.cpp
     ui_log.cpp
     clip_android.cpp
+    egl_menu.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -29,12 +30,11 @@ add_library(CodmExternal SHARED
 
 target_include_directories(CodmExternal PRIVATE ${IMGUI_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/jnmaini_ui)
-target_compile_definitions(CodmExternal PRIVATE IMGUI_IMPL_OPENGL_ES2 GLES_SILENCE_DEPRECATION
-        IMGUI_VERSION)
+target_compile_definitions(CodmExternal PRIVATE IMGUI_IMPL_OPENGL_ES3 GLES_SILENCE_DEPRECATION)
 
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(EGL-lib EGL)
-find_library(GLESv2-lib GLESv2)
+find_library(GLESv3-lib GLESv3)
 
-target_link_libraries(CodmExternal ${log-lib} ${android-lib} ${EGL-lib} ${GLESv2-lib})
+target_link_libraries(CodmExternal ${log-lib} ${android-lib} ${EGL-lib} ${GLESv3-lib})

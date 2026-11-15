@@ -2,41 +2,32 @@ package com.xorel.codm.external;
 
 import android.content.Context;
 import android.graphics.PixelFormat;
-import android.opengl.GLSurfaceView;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 
-import javax.microedition.khronos.egl.EGLConfig;
-import javax.microedition.khronos.opengles.GL10;
-
-public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer {
+/** Overlay surface only. GLES 3 + ImGui run on a native thread (jnmaini egl path). */
+public class GlImGuiView extends SurfaceView implements SurfaceHolder.Callback {
     private static final String TAG = "GlImGuiView";
     private volatile boolean surfaceReady = false;
-    private boolean frameQueued = false;
-    private final Runnable drawAgain = new Runnable() {
-        @Override
-        public void run() {
-            frameQueued = false;
-            if (surfaceReady) requestRender();
-        }
-    };
-
-    public GlImGuiView(Context context) {
-        super(context);
-        initGl();
-    }
-
-    public GlImGuiView(Context context, AttributeSet attrs) {
-        super(context, attrs);
-        initGl();
-    }
 
     public interface OnGlReadyListener {
         void onGlReady(GlImGuiView view);
     }
 
     private OnGlReadyListener readyListener;
+
+    public GlImGuiView(Context context) {
+        super(context);
+        initSurface();
+    }
+
+    public GlImGuiView(Context context, AttributeSet attrs) {
+        super(context, attrs);
+        initSurface();
+    }
 
     public void setOnGlReadyListener(OnGlReadyListener listener) {
         readyListener = listener;
@@ -47,30 +38,29 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
         getHolder().setFormat(PixelFormat.TRANSLUCENT);
     }
 
-    private void initGl() {
-        setEGLContextClientVersion(2);
-        setEGLConfigChooser(8, 8, 8, 8, 0, 0);
+    private void initSurface() {
+        setZOrderOnTop(true);
         getHolder().setFormat(PixelFormat.TRANSLUCENT);
-        setPreserveEGLContextOnPause(false);
-        setRenderer(this);
-        setRenderMode(RENDERMODE_WHEN_DIRTY);
+        getHolder().addCallback(this);
     }
 
     public void releaseGl() {
         surfaceReady = false;
-        queueEvent(() -> {
-            try {
-                NativeBridge.nativeGlSurfaceDestroyed();
-            } catch (Throwable t) {
-                Log.e(TAG, "destroy", t);
-            }
-        });
+        try {
+            NativeBridge.nativeDetachWindow();
+        } catch (Throwable t) {
+            Log.e(TAG, "detach", t);
+        }
     }
 
+    public void requestRender() {}
+
     @Override
-    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+    public void surfaceCreated(SurfaceHolder holder) {
         try {
-            NativeBridge.nativeGlSurfaceCreated();
+            NativeBridge.nativeAttachWindow(holder.getSurface());
+            surfaceReady = true;
+            if (readyListener != null) readyListener.onGlReady(this);
         } catch (Throwable t) {
             Log.e(TAG, "surfaceCreated", t);
             surfaceReady = false;
@@ -78,36 +68,16 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
     }
 
     @Override
-    public void onSurfaceChanged(GL10 gl, int width, int height) {
-        if (width <= 0 || height <= 0) return;
-        try {
-            NativeBridge.nativeGlSurfaceChanged(width, height);
-            surfaceReady = true;
-            setRenderMode(RENDERMODE_WHEN_DIRTY);
-            requestRender();
-            if (readyListener != null) readyListener.onGlReady(this);
-        } catch (Throwable t) {
-            Log.e(TAG, "surfaceChanged", t);
-            surfaceReady = false;
-        }
-    }
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
 
     @Override
-    public void onDrawFrame(GL10 gl) {
-        if (!surfaceReady) return;
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        surfaceReady = false;
         try {
-            NativeBridge.nativeGlDrawFrame();
-            scheduleNextFrame();
+            NativeBridge.nativeDetachWindow();
         } catch (Throwable t) {
-            Log.e(TAG, "drawFrame", t);
+            Log.e(TAG, "surfaceDestroyed", t);
         }
-    }
-
-    private void scheduleNextFrame() {
-        if (frameQueued || !surfaceReady) return;
-        if (!NativeBridge.nativeNeedsContinuousGl()) return;
-        frameQueued = true;
-        postDelayed(drawAgain, 16);
     }
 
     @Override
@@ -123,7 +93,6 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
         if (!surfaceReady || !NativeBridge.nativeIsMenuInteractive()) return false;
         try {
             NativeBridge.nativeTouch(event.getActionMasked(), event.getX(), event.getY());
-            requestRender();
         } catch (Throwable t) {
             Log.e(TAG, "touch", t);
             return false;

@@ -1,6 +1,7 @@
 #pragma once
 
 struct CodmFrame;
+struct ImFont;
 
 void jnmaini_style_init_once();
 void jnmaini_style_shutdown();

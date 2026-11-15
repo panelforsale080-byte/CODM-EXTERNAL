@@ -60,7 +60,7 @@ void jnmaini_style_init_once() {
     ImFontConfig icons_config;
     icons_config.MergeMode = true;
     icons_config.PixelSnapH = true;
-    if (font_awesome_data && font_awesome_size > 0) {
+    if (font_awesome_size > 0) {
         io.Fonts->AddFontFromMemoryCompressedTTF(font_awesome_data, font_awesome_size, 24.0f, &icons_config,
                                                 icons_ranges);
     }

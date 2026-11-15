@@ -31,27 +31,11 @@ jobs:
 
       - run: chmod +x gradlew
 
-      - name: Fetch Gradle wrapper (retry)
-        run: |
-          set +e
-          for attempt in 1 2 3 4 5; do
-            ./gradlew --version && exit 0
-            echo "Gradle wrapper fetch failed (attempt ${attempt}/5), waiting..."
-            sleep 30
-          done
-          exit 1
+      - name: Fetch Gradle wrapper
+        run: ./gradlew --version
 
       - name: Build protected release APK
-        run: |
-          set -e
-          for attempt in 1 2 3; do
-            if ./gradlew assembleRelease --stacktrace --no-daemon; then
-              exit 0
-            fi
-            echo "assembleRelease failed (attempt ${attempt}/3), retrying in 20s..."
-            sleep 20
-          done
-          exit 1
+        run: ./gradlew assembleRelease --stacktrace --no-daemon
 
       - name: Verify application APK
         run: |

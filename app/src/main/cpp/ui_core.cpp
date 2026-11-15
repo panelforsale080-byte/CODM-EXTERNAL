@@ -156,7 +156,7 @@ static void draw_menu() {
 
 void ui_gl_draw_frame() {
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplAndroid_NewFrame();
+    ImGui_ImplAndroid_NewFrame(g_w > 0 ? g_w : 1, g_h > 0 ? g_h : 1);
     ImGui::NewFrame();
     if (g_menu.load()) draw_menu();
     ImGui::Render();

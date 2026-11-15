@@ -27,6 +27,8 @@ static bool g_slotLocked = false;
 static bool g_slotHot = false;
 static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
+static uintptr_t g_worldKlass = 0;
+static bool g_ptraceWorldTried = false;
 static uintptr_t g_blob = 0;
 static uintptr_t g_camSlot = 0;
 static uintptr_t g_liveMatch = 0;
@@ -393,7 +395,8 @@ static void esp_find_step(pid_t pid) {
         g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
         return;
     }
-    static const char kSig[][16] = {"PVPGame", "OpenWorldGame", "MatchGame", "PVEGame", "GamePlay"};
+    static const char *kSig[] = {"PVPGame", "OpenWorldGame", "MatchGame", "PVEGame", "GamePlay",
+                                 "BaseWorld", "BRGame", "BRCatGame", "DMZGame"};
     constexpr size_t kChunk = 2 * 1024 * 1024;
     if (g_scanPhase == 0) {
         g_scanMaps.clear();
@@ -491,8 +494,11 @@ static void esp_find_step(pid_t pid) {
                         g_slotHot = false;
                     }
                 }
+                if (std::strcmp(name, "BaseWorld") == 0) g_worldKlass = cand;
                 if (std::strcmp(name, "PVPGame") == 0 || std::strcmp(name, "OpenWorldGame") == 0 ||
-                    std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVEGame") == 0)
+                    std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVEGame") == 0 ||
+                    std::strcmp(name, "BRGame") == 0 || std::strcmp(name, "BRCatGame") == 0 ||
+                    std::strcmp(name, "DMZGame") == 0)
                     remember_klass(cand);
             }
         }
@@ -505,12 +511,21 @@ static void esp_find_step(pid_t pid) {
                 if (q == k) hit = true;
             if (!hit) continue;
             const uintptr_t obj = g_scanAt + i;
+            char name[32] = {};
+            const bool named = instance_is_match(pid, obj, name, sizeof(name));
             uintptr_t list = 0;
             int sz = 0;
-            if (!mem_read(pid, obj + codm_off::kEnemyPawns, list) || !pawn_list_ok(pid, list, sz, true)) continue;
+            const bool pawns = find_pawn_list(pid, obj, list, sz);
+            if (!named && !pawns) {
+                for (uintptr_t poff : {uintptr_t{0x48}, uintptr_t{0x58}}) {
+                    if (obj < poff) continue;
+                    char sub[32] = {};
+                    if (!read_il2cpp_name(pid, obj - poff, sub, sizeof(sub))) continue;
+                    remember_klass(obj - poff);
+                }
+                continue;
+            }
             g_liveMatch = obj;
-            char name[32] = {};
-            instance_is_match(pid, obj, name, sizeof(name));
             ui_log("[esp] live %s=0x%llx pawns=%d", name[0] ? name : "match", (unsigned long long)obj, sz);
             g_scanPhase = 9;
             return;
@@ -669,8 +684,10 @@ static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap) {
         if (read_il2cpp_name(pid, klass, name, sizeof(name))) {
             const bool match = std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVPGame") == 0 ||
                                std::strcmp(name, "PVEGame") == 0 || std::strcmp(name, "OpenWorldGame") == 0 ||
-                               std::strcmp(name, "BarGame") == 0 || std::strcmp(name, "MPVEGame") == 0 ||
-                               std::strcmp(name, "BaseRecreationGame") == 0 || std::strcmp(name, "WinnerCircleGame") == 0;
+                               std::strcmp(name, "BRGame") == 0 || std::strcmp(name, "BRCatGame") == 0 ||
+                               std::strcmp(name, "DMZGame") == 0 || std::strcmp(name, "BarGame") == 0 ||
+                               std::strcmp(name, "MPVEGame") == 0 || std::strcmp(name, "BaseRecreationGame") == 0 ||
+                               std::strcmp(name, "WinnerCircleGame") == 0;
             if (match) {
                 if (out && cap) std::snprintf(out, cap, "%s", name);
                 return true;
@@ -703,6 +720,49 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
             ui_log("[esp] pawn list at match+0x%llx size=%d", (unsigned long long)off, sz);
             return true;
         }
+    }
+    return false;
+}
+
+static bool read_qword(pid_t pid, uintptr_t addr, uintptr_t &out, bool allowPtrace) {
+    out = 0;
+    if (mem_read(pid, addr, out) && mem_ptr_ok(out)) return true;
+    if (!allowPtrace || g_ptraceWorldTried) return false;
+    g_ptraceWorldTried = true;
+    if (!mem_read_ptrace(pid, addr, &out, sizeof(out)) || !mem_ptr_ok(out)) {
+        ui_log("[esp] ptrace BaseWorld miss @0x%llx", (unsigned long long)addr);
+        return false;
+    }
+    ui_log("[esp] ptrace BaseWorld=0x%llx", (unsigned long long)out);
+    return true;
+}
+
+/** Dump BaseWorld.Instance is the world. MatchGame is instance+0x20, BaseGame is +0x18. */
+static bool world_match(pid_t pid, uintptr_t &match) {
+    if (!g_worldKlass) return false;
+    const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8, 0xD8, 0xE0};
+    for (uintptr_t off : offs) {
+        uintptr_t sf = 0;
+        if (!mem_read(pid, g_worldKlass + off, sf) || !mem_ptr_ok(sf)) continue;
+        uintptr_t world = 0;
+        if (!read_qword(pid, sf, world, true)) continue;
+        uintptr_t mg = 0;
+        if (!mem_read(pid, world + 0x20, mg) || !mem_ptr_ok(mg)) mem_read(pid, world + 0x18, mg);
+        if (!mem_ptr_ok(mg)) continue;
+        char name[32] = {};
+        uintptr_t list = 0;
+        int sz = 0;
+        const bool named = instance_is_match(pid, mg, name, sizeof(name));
+        const bool pawns = find_pawn_list(pid, mg, list, sz);
+        if (!named && !pawns) continue;
+        match = mg;
+        static uintptr_t logged = 0;
+        if (logged != mg) {
+            logged = mg;
+            ui_log("[esp] BaseWorld=0x%llx MatchGame=0x%llx %s pawns=%d", (unsigned long long)world,
+                   (unsigned long long)mg, name[0] ? name : "list", sz);
+        }
+        return true;
     }
     return false;
 }
@@ -1017,6 +1077,8 @@ void codm_reset() {
     g_unityHooks = 0;
     g_nameScanDone = false;
     g_gameplayKlass = 0;
+    g_worldKlass = 0;
+    g_ptraceWorldTried = false;
     g_blob = 0;
     g_liveMatch = 0;
     g_scanPhase = 0;
@@ -1317,12 +1379,15 @@ void codm_tick(CodmFrame &out) {
             const bool gameOk = g_blob && g_matchSlot != g_blob && mem_read(pid, g_blob, game) && mem_ptr_ok(game) &&
                                 (instance_is_match(pid, game, gameName, sizeof(gameName)) ||
                                  find_pawn_list(pid, game, gameList, gameSize));
+            uintptr_t fromWorld = 0;
             if (gameOk) {
                 g_matchSlot = g_blob;
                 g_slotHot = false;
                 match = game;
                 ui_log("[esp] s_Game slot=0x%llx now=0x%llx %s pawns=%d", (unsigned long long)g_blob,
                        (unsigned long long)game, gameName[0] ? gameName : "list", gameSize);
+            } else if (world_match(pid, fromWorld)) {
+                match = fromWorld;
             } else {
                 g_match = 0;
                 static bool loggedEmpty = false;
@@ -1366,10 +1431,16 @@ void codm_tick(CodmFrame &out) {
         esp_find_step(pid);
         uintptr_t liveList = 0;
         int liveSize = 0;
-        if (g_liveMatch && find_pawn_list(pid, g_liveMatch, liveList, liveSize)) {
+        uintptr_t fromWorld = 0;
+        if (world_match(pid, fromWorld)) {
+            match = fromWorld;
+            find_pawn_list(pid, match, listPtr, size);
+        } else if (g_liveMatch && find_pawn_list(pid, g_liveMatch, liveList, liveSize)) {
             match = g_liveMatch;
             listPtr = liveList;
             size = liveSize;
+        } else if (g_liveMatch && instance_is_match(pid, g_liveMatch, nullptr, 0)) {
+            match = g_liveMatch;
         }
     }
     if (!listPtr || size <= 0) {

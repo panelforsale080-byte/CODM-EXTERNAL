@@ -104,6 +104,39 @@ bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n) {
     return ret == (ssize_t)n;
 }
 
+bool mem_read_ptrace(pid_t pid, uintptr_t addr, void *buf, size_t n) {
+    if (!pid || !addr || !buf || !n) return false;
+    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, __WALL) < 0) {
+        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        return false;
+    }
+    bool ok = true;
+    auto *dst = static_cast<uint8_t *>(buf);
+    uintptr_t a = addr;
+    size_t left = n;
+    while (left && ok) {
+        const uintptr_t aligned = a & ~7ULL;
+        errno = 0;
+        const long word = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void *>(aligned), nullptr);
+        if (errno) {
+            ok = false;
+            break;
+        }
+        uint8_t bytes[8];
+        std::memcpy(bytes, &word, 8);
+        const size_t off = (size_t)(a - aligned);
+        const size_t chunk = std::min(left, (size_t)8 - off);
+        std::memcpy(dst, bytes + off, chunk);
+        a += chunk;
+        dst += chunk;
+        left -= chunk;
+    }
+    ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+    return ok;
+}
+
 static char g_writeErr[160] = "ok";
 
 const char *mem_write_error() { return g_writeErr; }

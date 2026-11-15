@@ -18,6 +18,53 @@ static int g_anogsBypassN = 0;
 
 static uintptr_t g_match = 0;
 
+static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
+    if ((insn & 0x9F000000u) != 0x90000000u) return false;
+    int64_t imm = ((int64_t)((insn >> 5) & 0x7FFFF) << 2) | ((insn >> 29) & 3);
+    if (imm & (1LL << 20)) imm |= ~((1LL << 21) - 1);
+    page = (pc & ~uintptr_t(0xFFF)) + (uintptr_t)(imm << 12);
+    return true;
+}
+
+/** Follow the ADRP/ADD/LDR chain in an IL2CPP static getter. Reads only — does not run the function. */
+static uintptr_t read_static_getter(pid_t pid, uintptr_t func) {
+    uint32_t ins[16] = {};
+    if (!mem_read(pid, func, ins, sizeof(ins))) return 0;
+    uintptr_t reg[32] = {};
+    bool known[32] = {};
+    uintptr_t result = 0;
+    for (int i = 0; i < 16; ++i) {
+        const uint32_t insn = ins[i];
+        const uintptr_t pc = func + (uintptr_t)i * 4;
+        const int rd = insn & 31;
+        const int rn = (insn >> 5) & 31;
+        if (insn == 0xD65F03C0u) break;
+        uintptr_t page = 0;
+        if (arm64_adrp(insn, pc, page)) {
+            reg[rd] = page;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFF800000u) == 0x91000000u && known[rn]) {
+            uint32_t imm = (insn >> 10) & 0xFFF;
+            if (((insn >> 22) & 3) == 1) imm <<= 12;
+            reg[rd] = reg[rn] + imm;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFFC00000u) == 0xF9400000u && known[rn]) {
+            const uintptr_t src = reg[rn] + (((insn >> 10) & 0xFFF) * 8);
+            uintptr_t val = 0;
+            if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+                reg[rd] = val;
+                known[rd] = true;
+                result = val;
+            }
+        }
+    }
+    return mem_ptr_ok(result) ? result : 0;
+}
+
 void codm_reset() {
     g_pid.store(0);
     g_unity = g_anogs = 0;
@@ -95,15 +142,25 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
-    /* Do not ptrace-call into libunity on a timer. LR=0 was killing the match after the anogs patch. */
-    if (!g_match || !mem_ptr_ok(g_match)) {
+    /* Same pointer the original GamePlay::get_MatchGame() returns, read from its static field. */
+    const uintptr_t matchNow = read_static_getter(pid, g_unity + codm_off::kGameplay_get_MatchGame);
+    if (mem_ptr_ok(matchNow)) g_match = matchNow;
+    if (!g_match) {
         static bool logged = false;
         if (!logged) {
             logged = true;
-            ui_log("[esp] libs OK — not calling get_MatchGame (thread hijack was crashing the match)");
+            uint32_t head[4] = {};
+            mem_read(pid, g_unity + codm_off::kGameplay_get_MatchGame, head, sizeof(head));
+            ui_log("[esp] MatchGame static decode failed insn %08x %08x %08x %08x", head[0], head[1],
+                   head[2], head[3]);
         }
-        std::snprintf(out.status, sizeof(out.status), "libs OK — memory read only");
+        std::snprintf(out.status, sizeof(out.status), "libs OK — MatchGame not read");
         return;
+    }
+    static uintptr_t loggedMatch = 0;
+    if (loggedMatch != g_match) {
+        loggedMatch = g_match;
+        ui_log("[esp] MatchGame=0x%llx (static read, no call)", (unsigned long long)g_match);
     }
     uintptr_t match = g_match;
     uintptr_t listPtr = 0;

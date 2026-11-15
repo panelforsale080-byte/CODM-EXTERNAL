@@ -29,6 +29,8 @@ static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
 static uintptr_t g_blob = 0;
 static uintptr_t g_camSlot = 0;
+static int g_camNote = 0;
+static bool g_camLogged = false;
 
 static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -38,18 +40,20 @@ static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     return true;
 }
 
-static bool pawn_list_ok(pid_t pid, uintptr_t list, int &size) {
+static bool pawn_list_ok(pid_t pid, uintptr_t list, int &size, bool requirePawn) {
     size = -1;
     if (!mem_ptr_ok(list)) return false;
-    if (!mem_read(pid, list + 0x18, size) || size < 1 || size > 64) return false;
+    if (!mem_read(pid, list + 0x18, size) || size < 1 || size > 96) return false;
     uintptr_t items = 0;
     if (!mem_read(pid, list + 0x10, items) || !mem_ptr_ok(items)) return false;
+    int32_t maxLen = 0;
+    if (!mem_read(pid, items + 0x18, maxLen) || maxLen < size || maxLen > 256) return false;
     const int n = size < 4 ? size : 4;
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
         if (mem_read(pid, items + 0x20 + (uintptr_t)i * 8, pawn) && mem_ptr_ok(pawn)) return true;
     }
-    return false;
+    return !requirePawn;
 }
 
 static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, int *outSize = nullptr) {
@@ -60,7 +64,7 @@ static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, i
     uintptr_t list = 0;
     int size = -1;
     if (!mem_read(pid, obj + codm_off::kEnemyPawns, list)) return false;
-    if (!pawn_list_ok(pid, list, size)) return false;
+    if (!pawn_list_ok(pid, list, size, true)) return false;
     if (outSize) *outSize = size;
     return true;
 }
@@ -400,7 +404,11 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
                 uintptr_t np = 0;
                 mem_read(pid, val + 0x10, np);
                 if (mem_ptr_ok(np)) mem_read(pid, np, txt, sizeof(txt) - 1);
-                ui_log("[esp] hot ptr=0x%llx +0x10=\"%.16s\"", (unsigned long long)val, txt);
+                uintptr_t q[4] = {};
+                mem_read(pid, val, q, sizeof(q));
+                ui_log("[esp] hot ptr=0x%llx +0x10=\"%.16s\" q=%llx %llx %llx %llx", (unsigned long long)val, txt,
+                       (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2],
+                       (unsigned long long)q[3]);
             }
             if (named_klass(pid, val, "GamePlay")) {
                 g_gameplayKlass = val;
@@ -494,7 +502,7 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
     for (uintptr_t off : prefer) {
         uintptr_t p = 0;
         int sz = 0;
-        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz) && sz > 0) {
+        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz, false) && sz > 0) {
             list = p;
             size = sz;
             return true;
@@ -503,7 +511,7 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
     for (uintptr_t off = 0x100; off <= 0x240; off += 8) {
         uintptr_t p = 0;
         int sz = 0;
-        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz) && sz > 0) {
+        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz, true) && sz > 0) {
             list = p;
             size = sz;
             ui_log("[esp] pawn list at match+0x%llx size=%d", (unsigned long long)off, sz);
@@ -541,8 +549,8 @@ static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot) {
 }
 
 static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot) {
-    uint32_t ins[8] = {};
-    if (nins > 8) nins = 8;
+    uint32_t ins[48] = {};
+    if (nins > 48) nins = 48;
     if (nins < 1 || !mem_read(pid, func, ins, (size_t)nins * 4)) return false;
     uintptr_t reg[32] = {};
     bool known[32] = {};
@@ -551,9 +559,10 @@ static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot)
         const uint32_t insn = ins[i];
         const int rd = insn & 31;
         const int rn = (insn >> 5) & 31;
+        const uintptr_t pc = func + (uintptr_t)i * 4;
         if (insn == 0xD65F03C0u) break;
         uintptr_t page = 0;
-        if (arm64_adrp(insn, func + (uintptr_t)i * 4, page)) {
+        if (arm64_adrp(insn, pc, page)) {
             reg[rd] = page;
             known[rd] = true;
             continue;
@@ -564,6 +573,28 @@ static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot)
             reg[rd] = reg[rn] + imm;
             known[rd] = true;
             continue;
+        }
+        if ((insn & 0xFF000000u) == 0x58000000u) {
+            int32_t imm19 = (int32_t)((insn >> 5) & 0x7FFFF);
+            if (imm19 & 0x40000) imm19 |= ~0x7FFFF;
+            const uintptr_t src = pc + (uintptr_t)(imm19 * 4);
+            if (rd == 0) slot = src;
+            uintptr_t val = 0;
+            if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+                reg[rd] = val;
+                known[rd] = true;
+            }
+            continue;
+        }
+        if ((insn & 0xFC000000u) == 0x14000000u) {
+            int32_t imm = insn & 0x03FFFFFF;
+            if (imm & 0x02000000) imm |= ~0x03FFFFFF;
+            const int target = i + imm;
+            if (target > i && target < nins) {
+                i = target - 1;
+                continue;
+            }
+            break;
         }
         if ((insn & 0xFFC00000u) != 0xF9400000u || !known[rn]) continue;
         const uintptr_t src = reg[rn] + ((insn >> 10) & 0xFFF) * 8u;
@@ -595,41 +626,101 @@ static bool mat_is_view(const float *m) {
     return s > 0.6f && s < 4.5f;
 }
 
+static bool cam_slot_of(pid_t pid, uintptr_t func, int nins, uintptr_t &slot) {
+    if (decode_x0_slot(pid, func, nins, slot)) return true;
+    slot = 0;
+    return false;
+}
+
 static void fill_camera_vp(pid_t pid, CodmFrame &out) {
-    if (!g_camSlot && !decode_x0_slot(pid, g_unity + codm_off::kCamera_get_main, 4, g_camSlot)) return;
+    if (!g_camSlot) {
+        uintptr_t slot = 0;
+        if (!cam_slot_of(pid, g_unity + codm_off::kCamera_get_main, 4, slot))
+            cam_slot_of(pid, g_unity + codm_off::kPlayerCamera_get_WorldCamera, 40, slot);
+        if (!slot) {
+            if (!g_camLogged) {
+                g_camLogged = true;
+                uint32_t w[4] = {};
+                mem_read(pid, g_unity + codm_off::kCamera_get_main, w, sizeof(w));
+                ui_log("[esp] camera get_main decode fail %08x %08x %08x %08x", w[0], w[1], w[2], w[3]);
+            }
+            g_camNote = 1;
+            return;
+        }
+        g_camSlot = slot;
+    }
     uintptr_t cam = 0;
-    if (!mem_read(pid, g_camSlot, cam) || !mem_ptr_ok(cam)) return;
+    if (!mem_read(pid, g_camSlot, cam) || !mem_ptr_ok(cam)) {
+        uintptr_t worldSlot = 0;
+        uintptr_t world = 0;
+        if (cam_slot_of(pid, g_unity + codm_off::kPlayerCamera_get_WorldCamera, 40, worldSlot) &&
+            mem_read(pid, worldSlot, world) && mem_ptr_ok(world)) {
+            g_camSlot = worldSlot;
+            cam = world;
+        } else {
+            if (!g_camLogged) {
+                g_camLogged = true;
+                ui_log("[esp] camera slot=0x%llx now=0x0", (unsigned long long)g_camSlot);
+            }
+            g_camNote = 1;
+            return;
+        }
+    }
     uintptr_t native = 0;
     mem_read(pid, cam + 0x10, native);
     const uintptr_t roots[2] = {native, cam};
+    uint8_t buf[0x800] = {};
     for (uintptr_t root : roots) {
         if (!mem_ptr_ok(root)) continue;
-        uint8_t buf[0x480] = {};
         if (!mem_read(pid, root, buf, sizeof(buf))) continue;
-        for (int off = 64; off + 64 <= (int)sizeof(buf); off += 4) {
-            const float *proj = reinterpret_cast<float *>(buf + off);
-            const float *view = reinterpret_cast<float *>(buf + off - 64);
-            if (!mat_is_proj(proj) || !mat_is_view(view)) continue;
-            Matrix4x4 vmat;
-            Matrix4x4 pmat;
-            for (int c = 0; c < 4; ++c) {
-                for (int r = 0; r < 4; ++r) {
-                    vmat.Matrix[r][c] = view[c * 4 + r];
-                    pmat.Matrix[r][c] = proj[c * 4 + r];
-                }
-            }
-            const Matrix4x4 clip = vmat.Mult(pmat, vmat);
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c) out.vp[r * 4 + c] = clip.Matrix[r][c];
-            out.vpOk = 1;
-            out.viewOk = 1;
-            static int loggedOff = -1;
-            if (loggedOff != off) {
-                loggedOff = off;
-                ui_log("[esp] camera vp view+0x%x proj+0x%x", off - 64, off);
-            }
-            return;
+        int viewOff = -1;
+        int projOff = -1;
+        for (int off = 0; off + 64 <= (int)sizeof(buf); off += 4) {
+            const float *m = reinterpret_cast<float *>(buf + off);
+            if (viewOff < 0 && mat_is_view(m)) viewOff = off;
+            if (projOff < 0 && mat_is_proj(m)) projOff = off;
+            if (viewOff >= 0 && projOff >= 0) break;
         }
+        if (viewOff < 0 || projOff < 0 || viewOff == projOff) continue;
+        const int gap = viewOff > projOff ? viewOff - projOff : projOff - viewOff;
+        if (gap > 0x180) continue;
+        const float *view = reinterpret_cast<float *>(buf + viewOff);
+        const float *proj = reinterpret_cast<float *>(buf + projOff);
+        Matrix4x4 vmat;
+        Matrix4x4 pmat;
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) {
+                vmat.Matrix[r][c] = view[c * 4 + r];
+                pmat.Matrix[r][c] = proj[c * 4 + r];
+            }
+        }
+        const Matrix4x4 clip = vmat.Mult(pmat, vmat);
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c) out.vp[r * 4 + c] = clip.Matrix[r][c];
+        out.vpOk = 1;
+        out.viewOk = 1;
+        g_camNote = 2;
+        static int loggedView = -1;
+        if (loggedView != viewOff) {
+            loggedView = viewOff;
+            ui_log("[esp] camera=0x%llx native=0x%llx vp view+0x%x proj+0x%x", (unsigned long long)cam,
+                   (unsigned long long)native, viewOff, projOff);
+        }
+        return;
+    }
+    uintptr_t worldSlot = 0;
+    uintptr_t world = 0;
+    if (g_camSlot && cam_slot_of(pid, g_unity + codm_off::kPlayerCamera_get_WorldCamera, 40, worldSlot) &&
+        worldSlot != g_camSlot && mem_read(pid, worldSlot, world) && mem_ptr_ok(world)) {
+        ui_log("[esp] camera switch WorldCamera slot=0x%llx now=0x%llx", (unsigned long long)worldSlot,
+               (unsigned long long)world);
+        g_camSlot = worldSlot;
+        g_camNote = 0;
+        return;
+    }
+    if (g_camNote != 3) {
+        g_camNote = 3;
+        ui_log("[esp] camera=0x%llx native=0x%llx vp miss", (unsigned long long)cam, (unsigned long long)native);
     }
 }
 
@@ -729,6 +820,8 @@ void codm_reset() {
     g_gameplayKlass = 0;
     g_blob = 0;
     g_camSlot = 0;
+    g_camNote = 0;
+    g_camLogged = false;
     for (auto &h : g_unityHooksTable) {
         h.haveOrig = false;
         h.applied = false;
@@ -998,14 +1091,30 @@ void codm_tick(CodmFrame &out) {
             g_matchSlot = better;
             match = obj;
         } else {
-            g_match = 0;
-            static bool loggedEmpty = false;
-            if (!loggedEmpty) {
-                loggedEmpty = true;
-                ui_log("[esp] s_MatchGame empty (lobby)");
+            uintptr_t game = 0;
+            char gameName[32] = {};
+            uintptr_t gameList = 0;
+            int gameSize = 0;
+            const bool gameOk = g_blob && g_matchSlot != g_blob && mem_read(pid, g_blob, game) && mem_ptr_ok(game) &&
+                                (instance_is_match(pid, game, gameName, sizeof(gameName)) ||
+                                 find_pawn_list(pid, game, gameList, gameSize));
+            if (gameOk) {
+                g_matchSlot = g_blob;
+                g_slotHot = false;
+                match = game;
+                ui_log("[esp] s_Game slot=0x%llx now=0x%llx %s pawns=%d", (unsigned long long)g_blob,
+                       (unsigned long long)game, gameName[0] ? gameName : "list", gameSize);
+            } else {
+                g_match = 0;
+                static bool loggedEmpty = false;
+                const char *cam = g_camNote == 2 ? "vp" : g_camNote == 3 ? "no-matrix" : g_camNote == 1 ? "null" : "wait";
+                if (!loggedEmpty) {
+                    loggedEmpty = true;
+                    ui_log("[esp] s_MatchGame empty (lobby) camera=%s", cam);
+                }
+                std::snprintf(out.status, sizeof(out.status), "lobby — enter a match  camera=%s", cam);
+                return;
             }
-            std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
-            return;
         }
     }
     uintptr_t listPtr = 0;
@@ -1040,8 +1149,17 @@ void codm_tick(CodmFrame &out) {
             loggedBad = match;
             char name[32] = {};
             instance_is_match(pid, match, name, sizeof(name));
-            ui_log("[esp] vm_read ptr=0x%llx klass=%s has no pawn list", (unsigned long long)match,
-                   name[0] ? name : "?");
+            uintptr_t ep = 0;
+            int32_t epSize = -1;
+            uintptr_t epItems = 0;
+            mem_read(pid, match + codm_off::kEnemyPawns, ep);
+            if (mem_ptr_ok(ep)) {
+                mem_read(pid, ep + 0x18, epSize);
+                mem_read(pid, ep + 0x10, epItems);
+            }
+            ui_log("[esp] vm_read ptr=0x%llx klass=%s EnemyPawns=0x%llx size=%d items=0x%llx",
+                   (unsigned long long)match, name[0] ? name : "?", (unsigned long long)ep, epSize,
+                   (unsigned long long)epItems);
         }
         if (!g_gameplayKlass && !g_slotHot) {
             g_matchSlot = 0;
@@ -1073,7 +1191,7 @@ void codm_tick(CodmFrame &out) {
     if (!local) {
         uintptr_t all = 0;
         int allSize = 0;
-        if (mem_read(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize)) {
+        if (mem_read(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize, false)) {
             uintptr_t allItems = 0;
             mem_read(pid, all + 0x10, allItems);
             const int an = allSize < 64 ? allSize : 64;

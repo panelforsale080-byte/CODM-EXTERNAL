@@ -4,6 +4,8 @@
 /** jnmaini CLASS.h FastOffsets — libunity.so RVA, hardcoded (no IL2CPP in overlay). */
 namespace codm_off {
 constexpr uintptr_t kCamera_get_main = 0x52D5CDC;
+constexpr uintptr_t kPlayerCamera_get_WorldCamera = 0x6691290;
+constexpr uintptr_t kWorldCameraField = 0x10;
 constexpr uintptr_t kWorldToScreen = 0x52D5820;
 constexpr uintptr_t kGameplay_get_MatchGame = 0x801191C;
 constexpr uintptr_t kGameplay_get_LocalPawn = 0x8012814;

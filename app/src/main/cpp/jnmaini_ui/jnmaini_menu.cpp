@@ -3,11 +3,7 @@
 #include "widgets.hpp"
 #include "weapon_category_config.h"
 
-#include "codm_engine.hpp"
-#include "proc.hpp"
-#include "ui_log.hpp"
-
-#include "jnmaini_ui/Icon.h"
+#include "Icon.h"
 #include "Iconcpp.h"
 
 #include "imgui.h"

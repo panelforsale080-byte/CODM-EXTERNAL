@@ -123,10 +123,13 @@ void ui_sync_menu_touch_state() {}
 
 static void draw_menu() {
     ImGui::SetNextWindowSize(ImVec2(520, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("CODM EXTERNAL (jnmaini)", &g_menu)) {
+    bool menuOpen = g_menu.load();
+    if (!ImGui::Begin("CODM EXTERNAL (jnmaini)", &menuOpen)) {
+        g_menu.store(menuOpen);
         ImGui::End();
         return;
     }
+    g_menu.store(menuOpen);
     ImGui::Text("Target: com.garena.game.codm");
     ImGui::Checkbox("Auto find PID", &g_autoFind);
     ImGui::Checkbox("Auto-patch anogs (hooks.h BYPASS)", &g_patchAnogs);

@@ -16,9 +16,12 @@ static uintptr_t g_anogs = 0;
 static bool g_anogsPatched = false;
 static int g_anogsBypassN = 0;
 
+static uintptr_t g_match = 0;
+
 void codm_reset() {
     g_pid.store(0);
     g_unity = g_anogs = 0;
+    g_match = 0;
     g_anogsPatched = false;
     g_anogsBypassN = 0;
 }
@@ -92,16 +95,17 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
-    uintptr_t match = 0;
-    uintptr_t ret = 0;
-    if (remote_call(pid, g_unity + codm_off::kGameplay_get_MatchGame, {}, ret, out.status,
-                    sizeof(out.status))) {
-        match = ret;
-    }
-    if (!match) {
-        std::snprintf(out.status, sizeof(out.status), "lobby / no MatchGame");
+    /* Do not ptrace-call into libunity on a timer. LR=0 was killing the match after the anogs patch. */
+    if (!g_match || !mem_ptr_ok(g_match)) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            ui_log("[esp] libs OK — not calling get_MatchGame (thread hijack was crashing the match)");
+        }
+        std::snprintf(out.status, sizeof(out.status), "libs OK — memory read only");
         return;
     }
+    uintptr_t match = g_match;
     uintptr_t listPtr = 0;
     if (!mem_read(pid, match + codm_off::kEnemyPawns, listPtr) || !mem_ptr_ok(listPtr)) {
         std::snprintf(out.status, sizeof(out.status), "no enemy list");

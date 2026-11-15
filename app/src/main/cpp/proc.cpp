@@ -1,6 +1,7 @@
 #include "proc.hpp"
 #include "mem.hpp"
 #include <dirent.h>
+#include <errno.h>
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
@@ -80,7 +81,14 @@ pid_t proc_find_codm_best() {
     return best;
 }
 
-bool proc_alive(pid_t pid) { return pid > 0 && kill(pid, 0) == 0; }
+bool proc_alive(pid_t pid) {
+    if (pid <= 0) return false;
+    char path[64];
+    std::snprintf(path, sizeof(path), "/proc/%d", (int)pid);
+    if (access(path, F_OK) == 0) return true;
+    if (kill(pid, 0) == 0) return true;
+    return errno == EPERM;
+}
 
 bool proc_probe_read(pid_t pid) {
     std::vector<MapsReg> maps;

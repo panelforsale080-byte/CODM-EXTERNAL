@@ -114,7 +114,24 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
     work.pc = func;
-    work.regs[30] = 0;
+    /* Returning to 0 crashes the match. Only call if a BRK stop point exists in the same page. */
+    uintptr_t trap = 0;
+    uint32_t saved = 0;
+    const uintptr_t page = func & ~uintptr_t(0xFFF);
+    for (uintptr_t a = page; a < page + 0x1000; a += 4) {
+        uint32_t insn = 0;
+        if (!mem_read(s.pid, a, &insn, 4)) continue;
+        if (insn == 0xD4200000u) {
+            trap = a;
+            break;
+        }
+    }
+    if (!trap) {
+        std::snprintf(s.err, sizeof(s.err), "no BRK return — skipped (would crash)");
+        return false;
+    }
+    work.regs[30] = trap;
+    (void)saved;
     if (!set_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;

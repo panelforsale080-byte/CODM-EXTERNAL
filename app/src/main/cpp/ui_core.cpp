@@ -105,7 +105,7 @@ static void reader_loop() {
         } else if (pid > 0 && g_espOn.load()) {
             codm_tick(g_last);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
 }
 

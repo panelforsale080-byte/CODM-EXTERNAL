@@ -38,15 +38,15 @@ static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
 static bool pawn_list_ok(pid_t pid, uintptr_t list, int &size) {
     size = -1;
     if (!mem_ptr_ok(list)) return false;
-    if (!mem_read(pid, list + 0x18, size) || size < 0 || size > 64) return false;
-    if (size == 0) return true;
+    if (!mem_read(pid, list + 0x18, size) || size < 1 || size > 64) return false;
     uintptr_t items = 0;
-    uintptr_t pawn = 0;
-    uint8_t alive = 0;
     if (!mem_read(pid, list + 0x10, items) || !mem_ptr_ok(items)) return false;
-    if (!mem_read(pid, items + 0x20, pawn) || !mem_ptr_ok(pawn)) return false;
-    if (!mem_read(pid, pawn + codm_off::kPawn_m_IsAlive, alive) || alive > 1) return false;
-    return true;
+    const int n = size < 4 ? size : 4;
+    for (int i = 0; i < n; ++i) {
+        uintptr_t pawn = 0;
+        if (mem_read(pid, items + 0x20 + (uintptr_t)i * 8, pawn) && mem_ptr_ok(pawn)) return true;
+    }
+    return false;
 }
 
 static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, int *outSize = nullptr) {
@@ -344,6 +344,7 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
     uintptr_t reg[32] = {};
     bool known[32] = {};
     uintptr_t x0Slot = 0;
+    uintptr_t staticBlob = 0;
     bool loggedPtr = false;
     for (int i = start; i < 32; ++i) {
         const uint32_t insn = ins[i];
@@ -375,11 +376,16 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
             const uint32_t byteOff = ((insn >> 10) & 0xFFF) * 8u;
             const uintptr_t src = reg[rn] + byteOff;
             uintptr_t val = 0;
-            if (rd == 0) x0Slot = src;
+            if (rd == 0) {
+                if (byteOff == codm_off::kMatchGameField) x0Slot = src;
+                else if (byteOff == 0 && staticBlob) x0Slot = staticBlob + codm_off::kMatchGameField;
+                else x0Slot = src + codm_off::kMatchGameField;
+            }
             if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
                 known[rd] = false;
                 continue;
             }
+            if (rd != 0 && !named_klass(pid, val, "GamePlay")) staticBlob = val;
             if (!loggedPtr) {
                 loggedPtr = true;
                 char txt[24] = {};
@@ -808,18 +814,37 @@ void codm_tick(CodmFrame &out) {
     uintptr_t match = 0;
     mem_read(pid, g_matchSlot, match);
     if (!mem_ptr_ok(match)) {
-        g_match = 0;
-        static bool loggedEmpty = false;
-        if (!loggedEmpty) {
-            loggedEmpty = true;
-            ui_log("[esp] s_MatchGame empty (lobby)");
+        uintptr_t alt = 0;
+        uintptr_t altList = 0;
+        int altSize = 0;
+        if (mem_read(pid, g_matchSlot + codm_off::kMatchGameField, alt) && mem_ptr_ok(alt) &&
+            find_pawn_list(pid, alt, altList, altSize)) {
+            g_matchSlot += codm_off::kMatchGameField;
+            match = alt;
+            ui_log("[esp] s_MatchGame is static+0x8 slot=0x%llx pawns=%d", (unsigned long long)g_matchSlot, altSize);
+        } else {
+            g_match = 0;
+            static bool loggedEmpty = false;
+            if (!loggedEmpty) {
+                loggedEmpty = true;
+                ui_log("[esp] s_MatchGame empty (lobby)");
+            }
+            std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
+            return;
         }
-        std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
-        return;
     }
     uintptr_t listPtr = 0;
     int size = 0;
     if (!find_pawn_list(pid, match, listPtr, size)) {
+        uintptr_t alt = 0;
+        if (mem_read(pid, g_matchSlot + codm_off::kMatchGameField, alt) && mem_ptr_ok(alt) &&
+            find_pawn_list(pid, alt, listPtr, size)) {
+            g_matchSlot += codm_off::kMatchGameField;
+            match = alt;
+            ui_log("[esp] s_MatchGame is static+0x8 slot=0x%llx", (unsigned long long)g_matchSlot);
+        }
+    }
+    if (!listPtr || size <= 0) {
         g_match = 0;
         static uintptr_t loggedBad = 0;
         if (loggedBad != match) {
@@ -870,7 +895,8 @@ void codm_tick(CodmFrame &out) {
             }
         }
     }
-    if (local && read_vec3(pid, local + codm_off::kPawn_m_Location, localX, localY, localZ)) {
+    if (local && (read_vec3(pid, local + codm_off::kPawn_m_LastPawnPos, localX, localY, localZ) ||
+                  read_vec3(pid, local + codm_off::kPawn_m_Location, localX, localY, localZ))) {
         float eye = 0.f;
         mem_read(pid, local + codm_off::kPawn_m_EyeHeight, eye);
         if (!(eye > 0.4f && eye < 3.f)) eye = 1.6f;
@@ -895,8 +921,8 @@ void codm_tick(CodmFrame &out) {
         mem_read(pid, pawn + codm_off::kPawn_m_IsAlive, alive);
         mem_read(pid, pawn + codm_off::kPawn_m_IsBot, bot);
         float x = 0, y = 0, z = 0;
-        if (!read_vec3(pid, pawn + codm_off::kPawn_m_Location, x, y, z))
-            read_vec3(pid, pawn + codm_off::kPawn_m_LastPawnPos, x, y, z);
+        if (!read_vec3(pid, pawn + codm_off::kPawn_m_LastPawnPos, x, y, z))
+            read_vec3(pid, pawn + codm_off::kPawn_m_Location, x, y, z);
         float eye = 0.f;
         mem_read(pid, pawn + codm_off::kPawn_m_EyeHeight, eye);
         if (!(eye > 0.4f && eye < 3.f)) eye = 1.6f;

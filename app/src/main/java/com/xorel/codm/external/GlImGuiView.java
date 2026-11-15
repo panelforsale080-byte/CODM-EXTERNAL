@@ -61,7 +61,14 @@ public class GlImGuiView extends SurfaceView implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (attached || width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) return;
+        try {
+            NativeBridge.nativeSetDisplaySize(width, height);
+            if (attached) NativeBridge.nativeGlSurfaceChanged(width, height);
+        } catch (Throwable t) {
+            Log.w(TAG, "size", t);
+        }
+        if (attached) return;
         attached = true;
         try {
             NativeBridge.nativeAttachWindow(holder.getSurface());

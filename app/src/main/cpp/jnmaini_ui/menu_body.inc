@@ -8,12 +8,29 @@ if (mw > 830.f) mw = 830.f;
 if (mh > 500.f) mh = 500.f;
 if (mw < 280.f) mw = 280.f;
 if (mh < 220.f) mh = 220.f;
+if (disp.x > 40.f && mw > disp.x) mw = disp.x;
+if (disp.y > 40.f && mh > disp.y) mh = disp.y;
+static float sizedForX = 0.f, sizedForY = 0.f;
+const bool displayChanged = sizedForX != disp.x || sizedForY != disp.y;
+if (displayChanged) {
+    sizedForX = disp.x;
+    sizedForY = disp.y;
+}
 ImVec2 center2 = ImGui::GetMainViewport()->GetCenter();
-ImGui::SetNextWindowPos(center2, ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_FirstUseEver); 
+ImGui::SetNextWindowPos(center2, displayChanged ? ImGuiCond_Always : ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+ImGui::SetNextWindowSize(ImVec2(mw, mh), displayChanged ? ImGuiCond_Always : ImGuiCond_FirstUseEver); 
 if (ImFont* __menuTitle = jnmaini_title_font()) ImGui::PushFont(__menuTitle);
 if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
 {
+    ImVec2 pos = ImGui::GetWindowPos();
+    ImVec2 sz = ImGui::GetWindowSize();
+    float nx = pos.x;
+    float ny = pos.y;
+    if (nx + sz.x > disp.x) nx = disp.x - sz.x;
+    if (ny + sz.y > disp.y) ny = disp.y - sz.y;
+    if (nx < 0.f) nx = 0.f;
+    if (ny < 0.f) ny = 0.f;
+    if (nx != pos.x || ny != pos.y) ImGui::SetWindowPos(ImVec2(nx, ny));
     DrawMacOSHeaderButtons();
     ImGui::Dummy(ImVec2(0, 10));
     
@@ -22,10 +39,13 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
     static int tab = 1;
     
     ImGui::Columns(2);
-    ImGui::SetColumnOffset(1, 200); 
+    float colW = ImGui::GetWindowWidth() * 0.28f;
+    if (colW < 110.f) colW = 110.f;
+    if (colW > 200.f) colW = 200.f;
+    ImGui::SetColumnOffset(1, colW);
     
     {
-        float buttonWidth = 170.0f;
+        float buttonWidth = colW - 24.f;
         float buttonHeight = 66.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10, 5.0f));
         

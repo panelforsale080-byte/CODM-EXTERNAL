@@ -5,7 +5,9 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ServiceInfo;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
@@ -51,10 +53,7 @@ public class OverlayService extends Service {
             NativeBridge.nativeSetContext(getApplicationContext());
             startForegroundNotif();
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            DisplayMetrics dm = new DisplayMetrics();
-            wm.getDefaultDisplay().getRealMetrics(dm);
-            screenW = Math.max(dm.widthPixels, 1);
-            screenH = Math.max(dm.heightPixels, 1);
+            readScreen();
             NativeBridge.nativeSetDisplaySize(screenW, screenH);
 
             glView = new GlImGuiView(this);
@@ -74,14 +73,19 @@ public class OverlayService extends Service {
                             : WindowManager.LayoutParams.TYPE_PHONE;
             surfaceLp =
                     new WindowManager.LayoutParams(
-                            screenW,
-                            screenH,
+                            WindowManager.LayoutParams.MATCH_PARENT,
+                            WindowManager.LayoutParams.MATCH_PARENT,
                             type,
                             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                                     | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                                     | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                             PixelFormat.TRANSLUCENT);
             surfaceLp.gravity = Gravity.TOP | Gravity.START;
+            surfaceLp.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                surfaceLp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            }
             wm.addView(glView, surfaceLp);
 
             int box = dp(64);
@@ -117,6 +121,31 @@ public class OverlayService extends Service {
         }
     }
 
+    private void readScreen() {
+        if (wm == null) return;
+        DisplayMetrics dm = new DisplayMetrics();
+        wm.getDefaultDisplay().getRealMetrics(dm);
+        screenW = Math.max(dm.widthPixels, 1);
+        screenH = Math.max(dm.heightPixels, 1);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        readScreen();
+        try {
+            NativeBridge.nativeSetDisplaySize(screenW, screenH);
+        } catch (Throwable ignored) {
+        }
+        if (surfaceLp != null && wm != null && glView != null) {
+            surfaceLp.screenOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+            try {
+                wm.updateViewLayout(glView, surfaceLp);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     private int dp(int v) {
         return (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
@@ -126,15 +155,16 @@ public class OverlayService extends Service {
         return menuExpanded;
     }
 
-    /** Full screen while the menu is open. Logo-sized window when minimized so the game receives taps. */
+    /** Full screen. Not touchable when the menu is closed so the game receives taps. */
     void setMenuTouch(boolean interactive) {
         Runnable apply =
                 () -> {
                     if (surfaceLp == null || wm == null || glView == null) return;
                     if (interactive == menuExpanded) return;
                     menuExpanded = interactive;
-                    surfaceLp.width = screenW;
-                    surfaceLp.height = screenH;
+                    readScreen();
+                    surfaceLp.width = WindowManager.LayoutParams.MATCH_PARENT;
+                    surfaceLp.height = WindowManager.LayoutParams.MATCH_PARENT;
                     surfaceLp.x = 0;
                     surfaceLp.y = 0;
                     int flags =

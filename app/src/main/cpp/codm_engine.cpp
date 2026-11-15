@@ -1429,9 +1429,8 @@ void codm_tick(CodmFrame &out) {
         return;
     }
     codm_auto_patch_unity();
-    const int steps = g_scanPhase >= 9 ? 1 : 4;
+    const int steps = g_match ? 0 : (g_scanPhase >= 9 ? 1 : 2);
     for (int step = 0; step < steps; ++step) esp_find_step(pid);
-    PeekScope peek(pid);
     fill_camera_vp(pid, out);
     if (!g_matchSlot) {
         uintptr_t slot = 0;

@@ -18,8 +18,6 @@ static CustomWidgets g_widgets;
 static ImFont* Crozn = nullptr;
 static bool g_styleDone = false;
 
-static bool g_logoToggled = false;
-
 void jnmaini_style_init_once() {
     if (g_styleDone) return;
     g_styleDone = true;
@@ -78,34 +76,6 @@ void jnmaini_style_shutdown() {
 
 ImFont *jnmaini_title_font() { return Crozn; }
 
-static void draw_logo_hud(bool& isToggled) {
-    const float size = 84.f;
-    const bool compact = ImGui::GetIO().DisplaySize.x < 520.f;
-    ImGui::SetNextWindowPos(compact ? ImVec2(0.f, 0.f) : ImVec2(18.f, 72.f), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.95f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 42.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 10.f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.1f, 0.96f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.55f, 0.58f, 0.95f, 1.f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 3.f);
-    if (ImGui::Begin("LogoOverlay", nullptr,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoResize |
-                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("logo_btn", ImVec2(size, size))) isToggled = true;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float r = size * 0.5f;
-        dl->AddCircleFilled(ImVec2(pos.x + r, pos.y + r), r, IM_COL32(90, 110, 230, 255));
-        dl->AddCircle(ImVec2(pos.x + r, pos.y + r), r - 3.f, IM_COL32(255, 255, 255, 255), 32, 3.f);
-        const char* mark = "C";
-        ImVec2 ts = ImGui::CalcTextSize(mark);
-        dl->AddText(ImVec2(pos.x + r - ts.x * 0.5f, pos.y + r - ts.y * 0.5f), IM_COL32(255, 255, 255, 255), mark);
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(2);
-}
-
 static void draw_main_menu(bool& isToggled) {
     if (!isToggled) return;
     g_jnmaini_menu_open = &isToggled;
@@ -117,5 +87,4 @@ void jnmaini_draw_frame(bool menuOpen, bool& isToggled, const CodmFrame* frame) 
     (void)frame;
     if (!menuOpen) return;
     draw_main_menu(isToggled);
-    draw_logo_hud(isToggled);
 }

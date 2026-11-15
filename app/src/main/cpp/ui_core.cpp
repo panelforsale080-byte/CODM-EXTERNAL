@@ -252,7 +252,12 @@ static void draw_world_esp(const CodmFrame &f) {
     if (!dl) return;
     char head[48];
     std::snprintf(head, sizeof(head), "ENEMIES %d", f.enemies);
-    dl->AddText(ImVec2(g_w * 0.5f - 36.f, 36.f), IM_COL32(255, 255, 255, 230), head);
+    const ImVec2 ts = ImGui::CalcTextSize(head);
+    const float tx = (g_w - ts.x) * 0.5f;
+    const float ty = 28.f;
+    dl->AddRectFilled(ImVec2(tx - 12.f, ty - 6.f), ImVec2(tx + ts.x + 12.f, ty + ts.y + 6.f),
+                      IM_COL32(0, 0, 0, 170), 8.f);
+    dl->AddText(ImVec2(tx, ty), IM_COL32(255, 255, 255, 230), head);
     const bool enable = checkboxStates["ESP ENABLE"];
     const bool box = enable || checkboxStates["ESP BOX"] || checkboxStates["3D::BOX"];
     const bool line = enable || checkboxStates["ESP LINE"];
@@ -309,19 +314,6 @@ void ui_gl_draw_frame() {
     ImGuiIO &io = ImGui::GetIO();
     if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
     draw_world_esp(g_last);
-    if (g_last.enemies > 0 || g_last.unity) {
-        ImGui::SetNextWindowPos(ImVec2(g_w * 0.5f, 12.f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
-        ImGui::SetNextWindowBgAlpha(0.45f);
-        ImGui::Begin("##esp", nullptr,
-                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
-        ImGui::Text("ESP enemies %d", g_last.enemies);
-        for (int i = 0; i < g_last.shown; ++i) {
-            ImGui::Text("#%d  HP %.0f/%.0f  %s", i + 1, g_last.list[i].hp, g_last.list[i].maxHp,
-                        g_last.list[i].alive ? "alive" : "");
-        }
-        ImGui::End();
-    }
     jnmaini_draw_frame(true, g_panelOpen, &g_last);
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

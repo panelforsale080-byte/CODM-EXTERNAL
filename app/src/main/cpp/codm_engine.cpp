@@ -327,6 +327,8 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
     return false;
 }
 
+static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot);
+
 static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
     if (g_gameplayKlass && slot_from_gameplay(pid, g_gameplayKlass, slot)) return true;
     uint32_t ins[32] = {};
@@ -484,8 +486,6 @@ static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap) {
     }
     return false;
 }
-
-static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot);
 
 static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size) {
     const uintptr_t prefer[] = {0x178, 0x160, 0x170, 0x168, 0x180, 0x188, 0x198, 0x1A0};

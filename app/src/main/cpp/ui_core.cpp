@@ -9,6 +9,7 @@
 #include "imgui_impl_android.h"
 #include "imgui_impl_opengl3.h"
 
+#include <android/input.h>
 #include <EGL/egl.h>
 #include <atomic>
 #include <chrono>
@@ -19,7 +20,8 @@
 ImVec2 initialScreenSize{0.f, 0.f};
 
 static int g_w = 0, g_h = 0;
-static std::atomic<bool> g_menu{true};
+static std::atomic<bool> g_menu{false};
+static std::atomic<bool> g_glReady{false};
 static std::atomic<bool> g_runReader{false};
 static std::atomic<bool> g_espOn{false};
 static std::atomic<pid_t> g_wantPid{0};
@@ -90,11 +92,13 @@ void ui_gl_surface_created() {
 void ui_gl_surface_changed(int w, int h) {
     g_w = w;
     g_h = h;
+    g_glReady.store(true);
     if (initialScreenSize.x <= 0.f)
         initialScreenSize = ImVec2((float)w, (float)h);
 }
 
 void ui_gl_surface_destroyed() {
+    g_glReady.store(false);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
     ImGui::DestroyContext();
@@ -102,18 +106,20 @@ void ui_gl_surface_destroyed() {
 }
 
 void ui_touch(int action, float x, float y) {
-    if (!ImGui::GetCurrentContext()) return;
+    if (!g_glReady.load() || !g_menu.load() || !ImGui::GetCurrentContext()) return;
     ImGuiIO &io = ImGui::GetIO();
     io.AddMousePosEvent(x, y);
     switch (action) {
-    case 0: // ACTION_DOWN
-    case 5: // ACTION_POINTER_DOWN
+    case AMOTION_EVENT_ACTION_DOWN:
+    case AMOTION_EVENT_ACTION_POINTER_DOWN:
         io.AddMouseButtonEvent(0, true);
         break;
-    case 1: // ACTION_UP
-    case 6: // ACTION_POINTER_UP
-    case 3: // ACTION_CANCEL
+    case AMOTION_EVENT_ACTION_UP:
+    case AMOTION_EVENT_ACTION_POINTER_UP:
+    case AMOTION_EVENT_ACTION_CANCEL:
         io.AddMouseButtonEvent(0, false);
+        break;
+    case AMOTION_EVENT_ACTION_MOVE:
         break;
     default:
         break;
@@ -128,7 +134,10 @@ void ui_toggle_menu() {
     g_menu.store(!g_menu.load());
     if (g_menu.load()) g_jnmaini_toggled = true;
 }
-void ui_minimize_menu() { g_menu.store(false); }
+void ui_minimize_menu() {
+    g_menu.store(false);
+    g_jnmaini_toggled = false;
+}
 bool ui_menu_interactive() { return g_menu.load(); }
 bool ui_needs_continuous_gl() { return g_menu.load() || g_espOn.load(); }
 
@@ -158,12 +167,11 @@ void jnmaini_draw_external_panel() {
         if (best > 0) attach_pid(best, "scan");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Re-patch anogs")) codm_auto_patch_anogs();
+    if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
     const pid_t pid = g_wantPid.load();
     ImGui::Text("PID %d | %s", (int)pid, g_last.status[0] ? g_last.status : "idle");
     ImGui::Text("unity=0x%llx anogs=0x%llx enemies=%d", (unsigned long long)g_last.unity,
                 (unsigned long long)g_last.anogs, g_last.enemies);
-    ui_log_imgui_panel();
 }
 
 void ui_gl_draw_frame() {

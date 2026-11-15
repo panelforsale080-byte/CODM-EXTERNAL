@@ -32,8 +32,9 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
             { ICON_FA_EYE,        1, 0.0f },
             { ICON_FA_CROSSHAIRS, 2, 0.0f },
             { ICON_FA_MICROCHIP,  3, 0.0f },
-         { ICON_FA_BULLSEYE,   7, 0.0f },
+            { ICON_FA_BULLSEYE,   7, 0.0f },
             { ICON_FA_COGS,       5, 0.0f },
+            { ICON_FA_CLIPBOARD_LIST, 6, 0.0f },
         };
         
         ImGuiIO& io = ImGui::GetIO();
@@ -275,6 +276,27 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
             }
             ImGui::EndChild();
         }
+        if (tab == 6)
+        {
+            ImGui::Text(ICON_FA_CLIPBOARD_LIST "  Log / hooks.h");
+            ImGui::Separator();
+            const int bypassN = codm_anogs_last_bypass_count();
+            if (codm_anogs_hooks_patched())
+                ImGui::TextColored(ImVec4(0.25f, 0.95f, 0.35f, 1.f),
+                                   ICON_FA_CHECK_CIRCLE " anogs hooks.h BYPASS OK (%d/4)", bypassN);
+            else if (bypassN > 0)
+                ImGui::TextColored(ImVec4(1.f, 0.75f, 0.2f, 1.f),
+                                   "anogs hooks.h partial %d/4 — tap Re-patch", bypassN);
+            else
+                ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f),
+                                   "anogs hooks.h not applied — start ESP or Re-patch");
+            if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
+            ImGui::SameLine();
+            if (ImGui::Button("Clear log")) ui_log_clear();
+            ImGui::Spacing();
+            ui_log_imgui_panel_ex(-1.f);
+        }
+
         if (tab == 7)
         {
             ImGui::Spacing();

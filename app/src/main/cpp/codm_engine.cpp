@@ -13,11 +13,13 @@ static std::atomic<pid_t> g_pid{0};
 static uintptr_t g_unity = 0;
 static uintptr_t g_anogs = 0;
 static bool g_anogsPatched = false;
+static int g_anogsBypassN = 0;
 
 void codm_reset() {
     g_pid.store(0);
     g_unity = g_anogs = 0;
     g_anogsPatched = false;
+    g_anogsBypassN = 0;
 }
 
 void codm_attach(pid_t pid) {
@@ -41,11 +43,13 @@ bool codm_auto_patch_anogs() {
     }
     char msg[120] = {};
     const int n = anogs_apply_bypass(pid, g_anogs, msg, sizeof(msg));
+    g_anogsBypassN = n;
     if (n > 0) {
-        g_anogsPatched = true;
+        g_anogsPatched = (n >= 4);
         ui_log("[anogs] auto-patch SUCCESS %d slot(s) from hooks.h (%s)", n, msg);
         return true;
     }
+    g_anogsPatched = false;
     ui_log("[anogs] auto-patch FAILED (hooks.h BYPASS)");
     return false;
 }
@@ -81,3 +85,7 @@ void codm_tick(CodmFrame &out) {
     std::snprintf(out.status, sizeof(out.status), "match OK enemies=%d anogs=%s", size,
                   g_anogsPatched ? "patched" : "raw");
 }
+
+bool codm_anogs_hooks_patched() { return g_anogsPatched; }
+
+int codm_anogs_last_bypass_count() { return g_anogsBypassN; }

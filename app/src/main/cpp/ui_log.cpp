@@ -49,9 +49,13 @@ void ui_log_copy_all(char *dst, size_t cap) {
     dst[used] = '\0';
 }
 
-void ui_log_imgui_panel() {
+void ui_log_imgui_panel() { ui_log_imgui_panel_ex(180.f); }
+
+void ui_log_imgui_panel_ex(float height) {
     std::lock_guard<std::mutex> lock(g_mu);
-    ImGui::BeginChild("log", ImVec2(0, 180), true);
+    if (height < 0.f) height = ImGui::GetContentRegionAvail().y;
+    if (height < 80.f) height = 80.f;
+    ImGui::BeginChild("log", ImVec2(0, height), true);
     for (const auto &ln : g_lines) ImGui::TextUnformatted(ln.c_str());
     ImGui::EndChild();
 }

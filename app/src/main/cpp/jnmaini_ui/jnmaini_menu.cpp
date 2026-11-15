@@ -7,6 +7,8 @@
 #include "Icon.h"
 #include "Iconcpp.h"
 
+#include "codm_engine.hpp"
+#include "ui_log.hpp"
 #include "imgui.h"
 
 #include <cfloat>
@@ -50,7 +52,9 @@ void jnmaini_style_init_once() {
     style.ScrollbarSize = 24.673f;
 
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigWindowsMoveFromTitleBarOnly = true;
+    io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
+    io.ConfigWindowsMoveFromTitleBarOnly = false;
+    io.TouchExtraPadding = ImVec2(6.f, 6.f);
     io.IniFilename = nullptr;
 
     ImFontConfig font_cfg;

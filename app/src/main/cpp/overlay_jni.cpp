@@ -92,3 +92,9 @@ Java_com_xorel_codm_external_NativeBridge_nativeIsEspActive(JNIEnv *, jclass) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeHeroComboPulse(JNIEnv *, jclass) {}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeSetRecordingHide(JNIEnv *, jclass, jboolean) {}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeSetMenuVideoMuted(JNIEnv *, jclass, jboolean) {}

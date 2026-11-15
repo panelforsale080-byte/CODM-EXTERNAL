@@ -7,7 +7,7 @@
 #include "proc.hpp"
 #include "ui_log.hpp"
 
-#include "Icon.h"
+#include "jnmaini_ui/Icon.h"
 #include "Iconcpp.h"
 
 #include "imgui.h"

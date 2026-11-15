@@ -54,8 +54,8 @@ void jnmaini_style_init_once() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
     io.ConfigWindowsMoveFromTitleBarOnly = false;
-    io.TouchExtraPadding = ImVec2(6.f, 6.f);
     io.IniFilename = nullptr;
+    style.TouchExtraPadding = ImVec2(6.f, 6.f);
 
     ImFontConfig font_cfg;
     font_cfg.SizePixels = 24.0f;

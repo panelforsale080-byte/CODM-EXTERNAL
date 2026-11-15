@@ -1,4 +1,5 @@
 #include "imgui.h"
+#include "ui_core.hpp"
 #include <cstdio>
 #include <map>
 #include <string>
@@ -55,11 +56,18 @@ void DrawMacOSHeaderButtons() {
     ImVec2 winPos = ImGui::GetWindowPos();
     ImVec2 winPad = ImGui::GetStyle().WindowPadding;
     float radius = 7.0f;
+    float spacing = 20.0f;
     ImVec2 circlePos = ImVec2(winPos.x + winPad.x + radius + 4, winPos.y + winPad.y + radius + 4);
     draw->AddCircleFilled(circlePos, radius, IM_COL32(255, 92, 85, 255));
+    draw->AddCircleFilled(ImVec2(circlePos.x + spacing, circlePos.y), radius, IM_COL32(255, 189, 47, 255));
     ImGui::SetCursorScreenPos(ImVec2(circlePos.x - radius, circlePos.y - radius));
     if (ImGui::InvisibleButton("closeBtn", ImVec2(radius * 2, radius * 2))) {
         if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
+    }
+    ImGui::SetCursorScreenPos(ImVec2(circlePos.x + spacing - radius, circlePos.y - radius));
+    if (ImGui::InvisibleButton("minBtn", ImVec2(radius * 2, radius * 2))) {
+        ui_minimize_menu();
+        ui_sync_menu_touch_state();
     }
 }
 

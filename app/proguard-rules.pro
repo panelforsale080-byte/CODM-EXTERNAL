@@ -1,15 +1,4 @@
-# JNI names are baked into libMlbbEsp.so. Keep those classes and native methods.
--keep class com.mlbb.esp.pure.NativeBridge { *; }
--keep class com.xorel.codm.external.LicenseNative { *; }
-
--keepclasseswithmembernames,includedescriptorclasses class * {
-    native <methods>;
-}
-
-# Manifest components and the view created from code.
--keep class com.xorel.codm.external.EspActivity { *; }
--keep class com.mlbb.esp.pure.OverlayService { *; }
--keep class com.mlbb.esp.pure.GlImGuiView { *; }
--keep class com.mlbb.esp.pure.OverlayRootLayout { *; }
-
--dontwarn com.mlbb.esp.pure.**
+-keep class com.xorel.codm.external.NativeBridge { *; }
+-keep class com.xorel.codm.external.BootActivity { *; }
+-keep class com.xorel.codm.external.OverlayService { *; }
+-keep class com.xorel.codm.external.GlImGuiView { *; }

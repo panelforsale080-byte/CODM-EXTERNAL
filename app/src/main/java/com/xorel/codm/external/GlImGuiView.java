@@ -88,14 +88,12 @@ public class GlImGuiView extends SurfaceView implements SurfaceHolder.Callback {
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (!surfaceReady) return false;
-        OverlayService svc = OverlayService.instance;
-        if (svc == null || !svc.isMenuInteractive()) return false;
         return super.dispatchTouchEvent(event);
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        if (!surfaceReady || !NativeBridge.nativeIsMenuInteractive()) return false;
+        if (!surfaceReady) return false;
         try {
             NativeBridge.nativeTouch(event.getActionMasked(), event.getX(), event.getY());
         } catch (Throwable t) {

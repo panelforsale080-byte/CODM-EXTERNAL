@@ -6,11 +6,6 @@ set(JNIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../jni/ImGui)
 
 add_library(CodmExternal SHARED
     ui_core.cpp
-    jnmaini_ui/jnmaini_menu.cpp
-    jnmaini_ui/things.cpp
-    jnmaini_ui/overlay_actions.cpp
-    jnmaini_ui/imgui_group_panel.cpp
-    jnmaini_ui/ui_maps.cpp
     overlay_jni.cpp
     proc.cpp
     mem.cpp
@@ -28,8 +23,7 @@ add_library(CodmExternal SHARED
     ${IMGUI_DIR}/imgui_impl_android.cpp
     ${IMGUI_DIR}/imgui_impl_opengl3.cpp)
 
-target_include_directories(CodmExternal PRIVATE ${IMGUI_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/jnmaini_ui)
+target_include_directories(CodmExternal PRIVATE ${IMGUI_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(CodmExternal PRIVATE IMGUI_IMPL_OPENGL_ES3 GLES_SILENCE_DEPRECATION)
 
 find_library(log-lib log)

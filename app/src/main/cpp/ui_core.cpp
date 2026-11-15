@@ -3,8 +3,6 @@
 #include "proc.hpp"
 #include "ui_log.hpp"
 #include "clip_android.hpp"
-#include "jnmaini_ui/jnmaini_menu.hpp"
-
 #include "imgui.h"
 #include "imgui_impl_android.h"
 #include "imgui_impl_opengl3.h"
@@ -16,6 +14,7 @@
 #include <chrono>
 #include <mutex>
 #include <pthread.h>
+#include <algorithm>
 #include <thread>
 
 ImVec2 initialScreenSize{0.f, 0.f};
@@ -29,7 +28,6 @@ static std::atomic<pid_t> g_wantPid{0};
 static bool g_autoFind = true;
 static bool g_patchAnogs = true;
 static CodmFrame g_last{};
-static bool g_jnmaini_toggled = true;
 static std::atomic<bool> g_passThroughReq{false};
 static const char *g_glsl = "#version 300 es";
 
@@ -89,10 +87,17 @@ void ui_set_display_size(int w, int h) {
 void ui_gl_surface_created() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    jnmaini_style_init_once();
+    ImGui::StyleColorsDark();
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
+    io.IniFilename = nullptr;
+    io.FontGlobalScale = 2.1f;
+    ImGui::GetStyle().WindowRounding = 8.f;
+    ImGui::GetStyle().FrameRounding = 6.f;
+    ImGui::GetStyle().TouchExtraPadding = ImVec2(8.f, 8.f);
     ImGui_ImplAndroid_Init(nullptr);
     ImGui_ImplOpenGL3_Init(g_glsl);
-    ui_log("[ui] GLES3 + jnmaini fonts ready");
+    ui_log("[ui] GLES3 ImGui ready");
 }
 
 void ui_gl_surface_changed(int w, int h) {
@@ -108,7 +113,6 @@ void ui_gl_surface_destroyed() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
     ImGui::DestroyContext();
-    jnmaini_style_shutdown();
 }
 
 void ui_touch(int action, float x, float y) {
@@ -132,23 +136,12 @@ void ui_touch(int action, float x, float y) {
     }
 }
 
-void ui_open_menu() {
-    g_menu.store(true);
-    g_jnmaini_toggled = true;
-}
-void ui_toggle_menu() {
-    g_menu.store(!g_menu.load());
-    if (g_menu.load()) g_jnmaini_toggled = true;
-}
-void ui_minimize_menu() {
-    g_menu.store(false);
-    g_jnmaini_toggled = false;
-}
-
-void ui_collapse_main_panel() { g_jnmaini_toggled = false; }
+void ui_open_menu() { g_menu.store(true); }
+void ui_toggle_menu() { g_menu.store(!g_menu.load()); }
+void ui_minimize_menu() { g_menu.store(false); }
+void ui_collapse_main_panel() { g_menu.store(false); }
 
 void ui_request_overlay_pass_through() {
-    g_jnmaini_toggled = false;
     g_menu.store(false);
     g_passThroughReq.store(true);
 }
@@ -174,34 +167,52 @@ void ui_esp_stop() {
 
 bool ui_esp_is_active() { return g_espOn.load(); }
 
-void jnmaini_draw_external_panel() {
-    ImGui::Text("Target: com.garena.game.codm");
+static void draw_menu() {
+    const float mw = g_w > 0 ? std::min(560.f, g_w * 0.86f) : 520.f;
+    const float mh = g_h > 0 ? std::min(720.f, g_h * 0.8f) : 640.f;
+    ImGui::SetNextWindowPos(ImVec2((g_w - mw) * 0.5f, (g_h - mh) * 0.5f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_FirstUseEver);
+    ImGui::Begin("CODM", nullptr);
+    ImGui::Text("com.garena.game.codm");
     ImGui::Checkbox("Auto find PID", &g_autoFind);
     ImGui::Checkbox("Auto-patch anogs (hooks.h)", &g_patchAnogs);
-    if (ImGui::Button("Scan + attach")) {
+    if (ImGui::Button("Scan + attach", ImVec2(-1, 0))) {
         pid_t best = proc_find_codm_best();
         if (best > 0) attach_pid(best, "scan");
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Re-patch anogs (hooks.h)")) codm_auto_patch_anogs();
+    if (ImGui::Button("Re-patch anogs (hooks.h)", ImVec2(-1, 0))) codm_auto_patch_anogs();
+    if (codm_anogs_hooks_patched())
+        ImGui::TextColored(ImVec4(0.3f, 1.f, 0.4f, 1.f), "hooks.h BYPASS OK (%d/4)",
+                           codm_anogs_last_bypass_count());
+    else
+        ImGui::Text("hooks.h not applied yet");
     const pid_t pid = g_wantPid.load();
     ImGui::Text("PID %d | %s", (int)pid, g_last.status[0] ? g_last.status : "idle");
-    ImGui::Text("unity=0x%llx anogs=0x%llx enemies=%d", (unsigned long long)g_last.unity,
-                (unsigned long long)g_last.anogs, g_last.enemies);
+    ImGui::Text("unity=0x%llx", (unsigned long long)g_last.unity);
+    ImGui::Text("anogs=0x%llx  enemies=%d", (unsigned long long)g_last.anogs, g_last.enemies);
+    if (ImGui::Button("Hide menu")) g_menu.store(false);
+    ImGui::Separator();
+    ui_log_imgui_panel_ex(-1.f);
+    ImGui::End();
 }
 
 void ui_gl_draw_frame() {
     if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
     glViewport(0, 0, g_w, g_h);
-    glClearColor(0.f, 0.f, 0.f, 0.35f);
+    glClearColor(0.f, 0.f, 0.f, 0.45f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w, g_h);
     ImGui::NewFrame();
-    if (g_menu.load()) {
-        ImGuiIO &io = ImGui::GetIO();
-        if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
-        jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
+    if (g_menu.load()) draw_menu();
+    else {
+        ImGui::SetNextWindowPos(ImVec2(24.f, 24.f), ImGuiCond_Always);
+        ImGui::Begin("##open", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize);
+        if (ImGui::Button("Open menu")) g_menu.store(true);
+        ImGui::End();
     }
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

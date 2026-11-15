@@ -394,7 +394,7 @@ static void esp_find_step(pid_t pid) {
         return;
     }
     static const char kSig[][16] = {"PVPGame", "OpenWorldGame", "MatchGame", "PVEGame", "GamePlay"};
-    constexpr size_t kChunk = 256 * 1024;
+    constexpr size_t kChunk = 2 * 1024 * 1024;
     if (g_scanPhase == 0) {
         g_scanMaps.clear();
         std::vector<MapsReg> maps;
@@ -418,12 +418,13 @@ static void esp_find_step(pid_t pid) {
             if (mem_get_maps(pid, maps)) {
                 for (const auto &r : maps)
                     if (scan_map_ok(r, true) ||
+                        (r.perms[0] == 'r' && r.path.find("libil2cpp") != std::string::npos) ||
                         (r.perms[0] == 'r' && std::strchr(r.perms, 'w') &&
-                         (r.path.find("libil2cpp") != std::string::npos ||
-                          r.path.find("libunity.so") != std::string::npos)))
+                         r.path.find("libunity.so") != std::string::npos))
                         g_scanMaps.push_back(r);
             }
             g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
+            ui_log("[esp] class pointer maps=%zu", g_scanMaps.size());
             if (g_scanStrs.empty() || g_scanMaps.empty()) g_scanPhase = 9;
         } else if (g_scanPhase == 2) {
             ui_log("[esp] class klasses=%zu", g_scanKlasses.size());
@@ -852,10 +853,18 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
         }
     }
     uintptr_t native = 0;
-    mem_read(pid, cam + 0x10, native);
-    const uintptr_t roots[2] = {native, cam};
-    uint8_t buf[0x800] = {};
-    for (uintptr_t root : roots) {
+    uintptr_t natives[6] = {};
+    int nativeN = 0;
+    for (uintptr_t off = 0x10; off <= 0x30 && nativeN < 5; off += 8) {
+        uintptr_t p = 0;
+        if (!mem_read(pid, cam + off, p) || !mem_ptr_ok(p)) continue;
+        natives[nativeN++] = p;
+        if (!native) native = p;
+    }
+    natives[nativeN++] = cam;
+    uint8_t buf[0x1000] = {};
+    for (int ni = 0; ni < nativeN; ++ni) {
+        const uintptr_t root = natives[ni];
         if (!mem_ptr_ok(root)) continue;
         if (!mem_read(pid, root, buf, sizeof(buf))) continue;
         int viewOff = -1;
@@ -868,7 +877,7 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
         }
         if (viewOff < 0 || projOff < 0 || viewOff == projOff) continue;
         const int gap = viewOff > projOff ? viewOff - projOff : projOff - viewOff;
-        if (gap > 0x180) continue;
+        if (gap > 0x400) continue;
         const float *view = reinterpret_cast<float *>(buf + viewOff);
         const float *proj = reinterpret_cast<float *>(buf + projOff);
         Matrix4x4 vmat;
@@ -905,7 +914,12 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
     }
     if (g_camNote != 3) {
         g_camNote = 3;
-        ui_log("[esp] camera=0x%llx native=0x%llx vp miss", (unsigned long long)cam, (unsigned long long)native);
+        char camName[32] = {};
+        uintptr_t camKlass = 0;
+        mem_read(pid, cam, camKlass);
+        read_il2cpp_name(pid, camKlass, camName, sizeof(camName));
+        ui_log("[esp] camera=0x%llx klass=%s native=0x%llx vp miss", (unsigned long long)cam,
+               camName[0] ? camName : "?", (unsigned long long)native);
     }
 }
 
@@ -1252,6 +1266,8 @@ void codm_tick(CodmFrame &out) {
     }
     fill_camera_vp(pid, out);
     codm_auto_patch_unity();
+    const int steps = g_scanPhase >= 9 ? 1 : 4;
+    for (int step = 0; step < steps; ++step) esp_find_step(pid);
     if (!g_matchSlot) {
         uintptr_t slot = 0;
         if (resolve_match_slot(pid, g_unity + codm_off::kGameplay_get_MatchGame, slot)) {
@@ -1272,12 +1288,15 @@ void codm_tick(CodmFrame &out) {
                 ui_log("[esp] getter %08x %08x %08x %08x %08x %08x", head[6], head[7], head[8], head[9],
                        head[10], head[11]);
             }
-            std::snprintf(out.status, sizeof(out.status), "libs OK — s_MatchGame not found");
-            return;
+            if (!g_liveMatch) {
+                std::snprintf(out.status, sizeof(out.status), "class scan phase %d", g_scanPhase);
+                return;
+            }
         }
     }
     uintptr_t match = 0;
-    mem_read(pid, g_matchSlot, match);
+    if (g_matchSlot) mem_read(pid, g_matchSlot, match);
+    if (!mem_ptr_ok(match) && g_liveMatch) match = g_liveMatch;
     if (!mem_ptr_ok(match)) {
         if (g_liveMatch && !instance_is_match(pid, g_liveMatch, nullptr, 0)) g_liveMatch = 0;
         esp_find_step(pid);
@@ -1372,11 +1391,7 @@ void codm_tick(CodmFrame &out) {
                    (unsigned long long)match, name[0] ? name : "?", (unsigned long long)ep, epSize,
                    (unsigned long long)epItems);
         }
-        if (!g_gameplayKlass && !g_slotHot) {
-            g_matchSlot = 0;
-            g_slotLocked = false;
-        }
-        std::snprintf(out.status, sizeof(out.status), "vm_read — no pawn list yet");
+        std::snprintf(out.status, sizeof(out.status), "class scan phase %d", g_scanPhase);
         return;
     }
     if (g_match != match) {

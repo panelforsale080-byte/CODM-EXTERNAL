@@ -172,7 +172,7 @@ namespace dos
             }
             secure_zero(m_plain, N);
             m_encrypted.store(true, std::memory_order_relaxed);
-            m_once = std::once_flag(); // allow decrypt again later
+            new (&m_once) std::once_flag(); // allow decrypt again later (NDK libc++ has no assign)
         }
 
     private:

@@ -57,79 +57,156 @@ static bool looks_like_match(pid_t pid, uintptr_t obj, int *outSize = nullptr) {
     return true;
 }
 
-/** Address of the IL2CPP static slot get_MatchGame reads (s_MatchGame at static_fields+0x8). */
-static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
-    uint32_t ins[24] = {};
-    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+static bool cstr_is(pid_t pid, uintptr_t p, const char *s) {
+    char buf[24] = {};
+    if (!mem_ptr_ok(p) || !mem_read(pid, p, buf, sizeof(buf) - 1)) return false;
+    return std::strcmp(buf, s) == 0;
+}
+
+static bool named_klass(pid_t pid, uintptr_t obj, const char *s) {
+    if (!mem_ptr_ok(obj)) return false;
+    for (uintptr_t off = 0; off <= 0x48; off += 8) {
+        uintptr_t p = 0;
+        if (mem_read(pid, obj + off, p) && cstr_is(pid, p, s)) return true;
+    }
+    return false;
+}
+
+struct WalkRegs {
     uintptr_t reg[32] = {};
     bool known[32] = {};
-    uintptr_t best = 0;
-    int bestScore = 0;
-    auto consider = [&](uintptr_t src, int bonus) {
-        uintptr_t val = 0;
-        if (!mem_read(pid, src, val)) return;
-        int score = bonus;
-        int sz = -1;
-        if (looks_like_match(pid, val, &sz)) score += (sz > 0 ? 200 : 20);
-        else if (val == 0) score += 1;
-        else return;
-        if (score > bestScore) {
-            bestScore = score;
-            best = src;
-        }
-    };
-    for (int i = 0; i < 24; ++i) {
+    bool gameplay[32] = {};
+    bool fields[32] = {};
+    uintptr_t x0Slot = 0;
+};
+
+/** Walk get_MatchGame. TBNZ is taken: that path is the inited getter. Cold path is the class init call. */
+static bool walk_getter(pid_t pid, uintptr_t func, const uint32_t *ins, int n, int i, WalkRegs st, uintptr_t &slot,
+                        int depth) {
+    if (depth > 6) return false;
+    for (; i < n; ++i) {
         const uint32_t insn = ins[i];
         const int rd = insn & 31;
         const int rn = (insn >> 5) & 31;
+        if (insn == 0xD65F03C0u) {
+            if (!st.x0Slot) return false;
+            slot = st.x0Slot;
+            return true;
+        }
         uintptr_t page = 0;
         if (arm64_adrp(insn, func + (uintptr_t)i * 4, page)) {
-            reg[rd] = page;
-            known[rd] = true;
+            st.reg[rd] = page;
+            st.known[rd] = true;
+            st.gameplay[rd] = false;
+            st.fields[rd] = false;
             continue;
         }
-        if ((insn & 0xFF800000u) == 0x91000000u && known[rn]) {
+        if ((insn & 0xFF800000u) == 0x91000000u && st.known[rn]) {
             uint32_t imm = (insn >> 10) & 0xFFF;
             if (((insn >> 22) & 3) == 1) imm <<= 12;
-            reg[rd] = reg[rn] + imm;
-            known[rd] = true;
+            st.reg[rd] = st.reg[rn] + imm;
+            st.known[rd] = true;
+            st.gameplay[rd] = false;
+            st.fields[rd] = false;
             continue;
         }
         if ((insn & 0xFFE0FFE0u) == 0xAA0003E0u) {
             const int rm = (insn >> 16) & 31;
-            if (known[rm]) {
-                reg[rd] = reg[rm];
-                known[rd] = true;
+            if (st.known[rm]) {
+                st.reg[rd] = st.reg[rm];
+                st.known[rd] = true;
+                st.gameplay[rd] = st.gameplay[rm];
+                st.fields[rd] = st.fields[rm];
             }
             continue;
         }
         const bool isLdr = (insn & 0xFFC00000u) == 0xF9400000u;
         const bool isLdur = (insn & 0xFFC00000u) == 0xF8400000u;
-        if ((!isLdr && !isLdur) || !known[rn]) continue;
-        uintptr_t src = 0;
-        if (isLdr) src = reg[rn] + (((insn >> 10) & 0xFFF) * 8u);
-        else {
-            int32_t imm9 = (insn >> 12) & 0x1FF;
-            if (imm9 & 0x100) imm9 |= ~0x1FF;
-            src = reg[rn] + (uintptr_t)imm9;
-        }
-        uintptr_t val = 0;
-        if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
-            if (rd == 0) consider(src, 2);
+        if ((isLdr || isLdur) && st.known[rn]) {
+            uintptr_t src = 0;
+            uint32_t byteOff = 0;
+            if (isLdr) {
+                byteOff = ((insn >> 10) & 0xFFF) * 8u;
+                src = st.reg[rn] + byteOff;
+            } else {
+                int32_t imm9 = (insn >> 12) & 0x1FF;
+                if (imm9 & 0x100) imm9 |= ~0x1FF;
+                src = st.reg[rn] + (uintptr_t)imm9;
+                byteOff = (uint32_t)imm9;
+            }
+            uintptr_t val = 0;
+            const bool ok = mem_read(pid, src, val);
+            if (rd == 0) st.x0Slot = src;
+            if (st.fields[rn] && byteOff == codm_off::kMatchGameField) {
+                slot = src;
+                return true;
+            }
+            if (!ok || !mem_ptr_ok(val)) {
+                st.known[rd] = false;
+                st.gameplay[rd] = false;
+                st.fields[rd] = false;
+                continue;
+            }
+            st.reg[rd] = val;
+            st.known[rd] = true;
+            st.gameplay[rd] = named_klass(pid, val, "GamePlay");
+            st.fields[rd] = st.gameplay[rn];
             continue;
         }
-        reg[rd] = val;
-        known[rd] = true;
-        if (rd == 0) consider(src, 5);
-        for (uintptr_t sfOff : {codm_off::kStaticFieldsA, codm_off::kStaticFieldsB}) {
-            uintptr_t sf = 0;
-            if (mem_read(pid, val + sfOff, sf) && mem_ptr_ok(sf))
-                consider(sf + codm_off::kMatchGameField, 40);
+        if ((insn & 0xFF000000u) == 0x58000000u) {
+            int32_t imm19 = (insn >> 5) & 0x7FFFF;
+            if (imm19 & 0x40000) imm19 |= ~0x7FFFF;
+            const uintptr_t src = (func + (uintptr_t)i * 4) + (uintptr_t)(imm19 * 4);
+            uintptr_t val = 0;
+            if (rd == 0) st.x0Slot = src;
+            if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+                st.reg[rd] = val;
+                st.known[rd] = true;
+                st.gameplay[rd] = named_klass(pid, val, "GamePlay");
+                st.fields[rd] = false;
+            }
+            continue;
+        }
+        const bool tb = (insn & 0x7F000000u) == 0x36000000u || (insn & 0x7F000000u) == 0x37000000u ||
+                        (insn & 0x7F000000u) == 0xB6000000u || (insn & 0x7F000000u) == 0xB7000000u;
+        const bool cb = (insn & 0x7F000000u) == 0x34000000u || (insn & 0x7F000000u) == 0x35000000u ||
+                        (insn & 0x7F000000u) == 0xB4000000u || (insn & 0x7F000000u) == 0xB5000000u;
+        if (tb || cb) {
+            int32_t imm = tb ? (int32_t)((insn >> 5) & 0x3FFF) : (int32_t)((insn >> 5) & 0x7FFFF);
+            const int signbit = tb ? 13 : 18;
+            if (imm & (1 << signbit)) imm |= ~((1 << (signbit + 1)) - 1);
+            const int target = i + (imm * 4) / 4;
+            if (target > i && target < n && walk_getter(pid, func, ins, n, target, st, slot, depth + 1)) return true;
+            continue;
+        }
+        if ((insn & 0xFC000000u) == 0x14000000u) {
+            int32_t imm = insn & 0x03FFFFFF;
+            if (imm & 0x02000000) imm |= ~0x03FFFFFF;
+            const int target = i + imm;
+            if (target > i && target < n) {
+                i = target - 1;
+                continue;
+            }
+            return false;
+        }
+        if ((insn & 0xFC000000u) == 0x94000000u || (insn & 0xFFFFFC1Fu) == 0xD63F0000u) {
+            for (int r = 0; r <= 18; ++r) {
+                st.known[r] = false;
+                st.gameplay[r] = false;
+                st.fields[r] = false;
+            }
         }
     }
-    if (!best || bestScore < 40) return false;
-    slot = best;
+    if (!st.x0Slot) return false;
+    slot = st.x0Slot;
     return true;
+}
+
+static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
+    uint32_t ins[32] = {};
+    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+    WalkRegs st;
+    return walk_getter(pid, func, ins, 32, 0, st, slot, 0);
 }
 
 static bool read_vec3(pid_t pid, uintptr_t addr, float &x, float &y, float &z) {
@@ -220,7 +297,9 @@ static void sync_feature_patches(pid_t pid, uintptr_t unity) {
             }
             if (mem_write(pid, addr, f.bytes, sizeof(f.bytes))) {
                 f.applied = true;
-                ui_log("[feat] %s ON @ unity+0x%llx", f.name, (unsigned long long)f.rva);
+                ui_log("[feat] %s OK @ 0x%llx via %s", f.name, (unsigned long long)addr, mem_write_error());
+            } else {
+                ui_log("[feat] %s FAIL @ 0x%llx (%s)", f.name, (unsigned long long)addr, mem_write_error());
             }
         } else if (f.haveOrig && mem_write(pid, addr, f.orig, sizeof(f.orig))) {
             f.applied = false;
@@ -312,22 +391,25 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
-    sync_feature_patches(pid, g_unity);
-    if (!g_matchSlot || !g_slotLocked) {
+    if (!g_matchSlot) {
         uintptr_t slot = 0;
         if (resolve_match_slot(pid, g_unity + codm_off::kGameplay_get_MatchGame, slot)) {
-            if (slot != g_matchSlot) {
-                g_matchSlot = slot;
-                ui_log("[esp] s_MatchGame slot=0x%llx", (unsigned long long)g_matchSlot);
-            }
-        } else if (!g_matchSlot) {
+            g_matchSlot = slot;
+            g_slotLocked = true;
+            uintptr_t now = 0;
+            mem_read(pid, g_matchSlot, now);
+            ui_log("[esp] s_MatchGame slot=0x%llx now=0x%llx", (unsigned long long)g_matchSlot,
+                   (unsigned long long)now);
+        } else {
             static bool logged = false;
             if (!logged) {
                 logged = true;
-                uint32_t head[6] = {};
+                uint32_t head[12] = {};
                 mem_read(pid, g_unity + codm_off::kGameplay_get_MatchGame, head, sizeof(head));
-                ui_log("[esp] s_MatchGame slot not found insn %08x %08x %08x %08x %08x %08x", head[0],
-                       head[1], head[2], head[3], head[4], head[5]);
+                ui_log("[esp] getter %08x %08x %08x %08x %08x %08x", head[0], head[1], head[2], head[3],
+                       head[4], head[5]);
+                ui_log("[esp] getter %08x %08x %08x %08x %08x %08x", head[6], head[7], head[8], head[9],
+                       head[10], head[11]);
             }
             std::snprintf(out.status, sizeof(out.status), "libs OK — s_MatchGame not found");
             return;
@@ -335,14 +417,35 @@ void codm_tick(CodmFrame &out) {
     }
     uintptr_t match = 0;
     mem_read(pid, g_matchSlot, match);
-    if (!looks_like_match(pid, match)) {
+    if (!mem_ptr_ok(match)) {
         g_match = 0;
-        std::snprintf(out.status, sizeof(out.status), "no match (lobby or slot empty)");
+        static bool loggedEmpty = false;
+        if (!loggedEmpty) {
+            loggedEmpty = true;
+            ui_log("[esp] s_MatchGame empty (lobby) — features wait for a match");
+        }
+        std::snprintf(out.status, sizeof(out.status), "lobby — enter a match");
         return;
     }
+    if (!looks_like_match(pid, match)) {
+        g_match = 0;
+        static uintptr_t loggedBad = 0;
+        if (loggedBad != match) {
+            loggedBad = match;
+            uintptr_t list = 0;
+            int sz = -1;
+            mem_read(pid, match + codm_off::kEnemyPawns, list);
+            if (mem_ptr_ok(list)) mem_read(pid, list + 0x18, sz);
+            ui_log("[esp] ptr=0x%llx not a match list=0x%llx size=%d", (unsigned long long)match,
+                   (unsigned long long)list, sz);
+        }
+        std::snprintf(out.status, sizeof(out.status), "match ptr rejected");
+        return;
+    }
+    sync_feature_patches(pid, g_unity);
     if (g_match != match) {
         g_match = match;
-        ui_log("[esp] MatchGame=0x%llx", (unsigned long long)match);
+        ui_log("[esp] MatchGame=0x%llx enemies pending", (unsigned long long)match);
     }
     out.match = match;
     uintptr_t listPtr = 0;

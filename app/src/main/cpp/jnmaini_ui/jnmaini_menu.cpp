@@ -80,7 +80,8 @@ ImFont *jnmaini_title_font() { return Crozn; }
 
 static void draw_logo_hud(bool& isToggled) {
     const float size = 84.f;
-    ImGui::SetNextWindowPos(ImVec2(18.f, 72.f), ImGuiCond_Always);
+    const bool compact = ImGui::GetIO().DisplaySize.x < 520.f;
+    ImGui::SetNextWindowPos(compact ? ImVec2(0.f, 0.f) : ImVec2(18.f, 72.f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.95f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 42.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.f, 10.f));

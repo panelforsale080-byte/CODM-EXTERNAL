@@ -8,10 +8,13 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.WindowManager;
 
@@ -24,9 +27,13 @@ public class OverlayService extends Service {
     private static final String TAG = "CodmOverlay";
     public static OverlayService instance;
 
+    private final Handler main = new Handler(Looper.getMainLooper());
     private WindowManager wm;
     private GlImGuiView glView;
-    private boolean menuInteractive = true;
+    private WindowManager.LayoutParams surfaceLp;
+    private int screenW = 1;
+    private int screenH = 1;
+    private boolean menuExpanded = true;
 
     @Override
     public void onCreate() {
@@ -43,9 +50,9 @@ public class OverlayService extends Service {
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             DisplayMetrics dm = new DisplayMetrics();
             wm.getDefaultDisplay().getRealMetrics(dm);
-            int w = Math.max(dm.widthPixels, 1);
-            int h = Math.max(dm.heightPixels, 1);
-            NativeBridge.nativeSetDisplaySize(w, h);
+            screenW = Math.max(dm.widthPixels, 1);
+            screenH = Math.max(dm.heightPixels, 1);
+            NativeBridge.nativeSetDisplaySize(screenW, screenH);
 
             glView = new GlImGuiView(this);
             glView.configureOverlaySurface();
@@ -62,29 +69,59 @@ public class OverlayService extends Service {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                             : WindowManager.LayoutParams.TYPE_PHONE;
-            WindowManager.LayoutParams lp =
+            surfaceLp =
                     new WindowManager.LayoutParams(
-                            w,
-                            h,
+                            screenW,
+                            screenH,
                             type,
                             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                                     | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                                     | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
                             PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.TOP | Gravity.START;
-            wm.addView(glView, lp);
+            surfaceLp.gravity = Gravity.TOP | Gravity.START;
+            wm.addView(glView, surfaceLp);
         } catch (Throwable t) {
             Log.e(TAG, "onCreate", t);
             stopSelf();
         }
     }
 
-    boolean isMenuInteractive() {
-        return menuInteractive;
+    private int dp(int v) {
+        return (int) TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }
 
+    boolean isMenuInteractive() {
+        return menuExpanded;
+    }
+
+    /** Full screen while the menu is open. Logo-sized window when minimized so the game receives taps. */
     void setMenuTouch(boolean interactive) {
-        menuInteractive = interactive;
+        Runnable apply =
+                () -> {
+                    if (surfaceLp == null || wm == null || glView == null) return;
+                    if (interactive == menuExpanded) return;
+                    menuExpanded = interactive;
+                    if (interactive) {
+                        surfaceLp.width = screenW;
+                        surfaceLp.height = screenH;
+                        surfaceLp.x = 0;
+                        surfaceLp.y = 0;
+                    } else {
+                        int box = dp(128);
+                        surfaceLp.width = box;
+                        surfaceLp.height = box;
+                        surfaceLp.x = dp(8);
+                        surfaceLp.y = dp(36);
+                    }
+                    try {
+                        wm.updateViewLayout(glView, surfaceLp);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "resize overlay", t);
+                    }
+                };
+        if (Looper.myLooper() == Looper.getMainLooper()) apply.run();
+        else main.post(apply);
     }
 
     void setComboFabVisible(boolean want) {}

@@ -147,7 +147,7 @@ void ui_request_overlay_pass_through() {
 
 bool ui_take_overlay_pass_through_request() { return g_passThroughReq.exchange(false); }
 
-bool ui_menu_interactive() { return g_menu.load(); }
+bool ui_menu_interactive() { return g_panelOpen; }
 bool ui_needs_continuous_gl() { return g_menu.load() || g_espOn.load(); }
 
 void ui_esp_start() {
@@ -190,7 +190,7 @@ void jnmaini_draw_external_panel() {
 void ui_gl_draw_frame() {
     if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
     glViewport(0, 0, g_w, g_h);
-    glClearColor(0.f, 0.f, 0.f, 0.2f);
+    glClearColor(0.f, 0.f, 0.f, 0.f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w, g_h);

@@ -52,8 +52,7 @@ static int g_ptrHits = 0;
 static bool esp_mem(pid_t pid, uintptr_t addr, void *buf, size_t n) {
     if (!pid || !addr || !buf || !n) return false;
     if (g_espPeek && n <= 512 && mem_peek(addr, buf, n)) return true;
-    auto vm = mem_read;
-    return vm(pid, addr, buf, n);
+    return mem_read(pid, addr, buf, n);
 }
 
 template <typename T>

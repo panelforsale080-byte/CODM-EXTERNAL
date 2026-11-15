@@ -11,7 +11,6 @@ jobs:
     timeout-minutes: 45
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
-      NDK_VERSION: "28.2.13676358"
     steps:
       - uses: actions/checkout@v4
 
@@ -26,27 +25,9 @@ jobs:
 
       - name: Install Android SDK + NDK
         run: |
-          set -e
           SDKM="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKM" --licenses >/dev/null || true
-          NDK_DIR="${ANDROID_HOME}/ndk/${NDK_VERSION}"
-          if [ -f "${NDK_DIR}/source.properties" ]; then
-            echo "NDK ${NDK_VERSION} already present — skip download"
-          else
-            for attempt in 1 2 3 4 5; do
-              rm -rf "${ANDROID_HOME}/ndk/${NDK_VERSION}" 2>/dev/null || true
-              if "$SDKM" "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;${NDK_VERSION}"; then
-                break
-              fi
-              echo "sdkmanager failed (attempt ${attempt}/5), retrying in 20s..."
-              sleep 20
-              if [ "$attempt" -eq 5 ]; then
-                echo "NDK install failed after 5 attempts"
-                exit 1
-              fi
-            done
-          fi
-          test -f "${NDK_DIR}/source.properties"
+          "$SDKM" "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;28.2.13676358"
 
       - run: chmod +x gradlew
 
@@ -60,7 +41,7 @@ jobs:
           done
           exit 1
 
-      - name: Build release APK
+      - name: Build protected release APK
         run: |
           set -e
           for attempt in 1 2 3; do
@@ -76,8 +57,9 @@ jobs:
         run: |
           APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
           "${ANDROID_HOME}/build-tools/35.0.0/aapt2" dump badging "$APK" | grep -q "package: name='com.xorel.codm.external'"
-          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libCodmEsp\.so'
-          echo "OK: codm-external release APK"
+          "${ANDROID_HOME}/build-tools/35.0.0/aapt2" dump badging "$APK" | grep -q "launchable-activity"
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/libCodmExternal\.so'
+          echo "OK: codm external release APK"
 
       - uses: actions/upload-artifact@v4
         with:

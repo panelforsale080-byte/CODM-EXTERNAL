@@ -34,6 +34,11 @@ android {
             )
             signingConfig = signingConfigs.getByName("debug")
             ndk { debugSymbolLevel = "NONE" }
+            externalNativeBuild {
+                cmake {
+                    cppFlags += "-fvisibility=hidden -fvisibility-inlines-hidden"
+                }
+            }
         }
     }
 
@@ -47,5 +52,6 @@ android {
 }
 
 dependencies {
+    /* EspActivity: ContextCompat for colors + notification permission check */
     implementation("androidx.core:core:1.13.1")
 }

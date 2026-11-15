@@ -1,42 +1,22 @@
-#include "overlay_jni.hpp"
-#include "clip_android.hpp"
 #include "ui_core.hpp"
+#include "clip_android.hpp"
+#include <android/native_window_jni.h>
 #include <jni.h>
 
 static JavaVM *g_vm = nullptr;
-static jclass g_cls = nullptr;
-static jmethodID g_menuTouch = nullptr;
-static jmethodID g_toast = nullptr;
 
-void jni_set_menu_touch(bool on) {
-    if (!g_vm || !g_cls || !g_menuTouch) return;
-    JNIEnv *env = nullptr;
-    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
-    env->CallStaticVoidMethod(g_cls, g_menuTouch, on ? JNI_TRUE : JNI_FALSE);
-    if (env->ExceptionCheck()) env->ExceptionClear();
-}
-
-void jni_toast(const char *msg) {
-    if (!g_vm || !g_cls || !g_toast || !msg) return;
-    JNIEnv *env = nullptr;
-    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
-    jstring j = env->NewStringUTF(msg);
-    env->CallStaticVoidMethod(g_cls, g_toast, j);
-    env->DeleteLocalRef(j);
-    if (env->ExceptionCheck()) env->ExceptionClear();
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
+    g_vm = vm;
+    return JNI_VERSION_1_6;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeInit(JNIEnv *env, jclass clazz) {
-    env->GetJavaVM(&g_vm);
-    g_cls = (jclass)env->NewGlobalRef(clazz);
-    g_menuTouch = env->GetStaticMethodID(clazz, "applyMenuTouch", "(Z)V");
-    g_toast = env->GetStaticMethodID(clazz, "showToast", "(Ljava/lang/String;)V");
-}
+Java_com_xorel_codm_external_NativeBridge_nativeInit(JNIEnv *, jclass) {}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeSetContext(JNIEnv *env, jclass, jobject ctx) {
     android_clip_set_context(g_vm, ctx);
+    (void)env;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -60,26 +40,30 @@ Java_com_xorel_codm_external_NativeBridge_nativeGlSurfaceDestroyed(JNIEnv *, jcl
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) { ui_gl_draw_frame(); }
-
-extern "C" JNIEXPORT jint JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeGlFrameDelayMs(JNIEnv *, jclass) {
-    return ui_gl_frame_delay_ms();
+Java_com_xorel_codm_external_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) {
+    ui_gl_draw_frame();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeTouch(JNIEnv *, jclass, jint action, jfloat x, jfloat y) {
-    ui_touch((int)action, x, y);
+Java_com_xorel_codm_external_NativeBridge_nativeTouch(JNIEnv *, jclass, jint action, jfloat x,
+                                                      jfloat y) {
+    ui_touch((int)action, (float)x, (float)y);
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeOpenMenu(JNIEnv *, jclass) { ui_open_menu(); }
+extern "C" JNIEXPORT void JNICALL Java_com_xorel_codm_external_NativeBridge_nativeOpenMenu(JNIEnv *,
+                                                                                           jclass) {
+    ui_open_menu();
+}
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeToggleMenu(JNIEnv *, jclass) { ui_toggle_menu(); }
+extern "C" JNIEXPORT void JNICALL Java_com_xorel_codm_external_NativeBridge_nativeToggleMenu(
+    JNIEnv *, jclass) {
+    ui_toggle_menu();
+}
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeMinimizeMenu(JNIEnv *, jclass) { ui_minimize_menu(); }
+extern "C" JNIEXPORT void JNICALL Java_com_xorel_codm_external_NativeBridge_nativeMinimizeMenu(
+    JNIEnv *, jclass) {
+    ui_minimize_menu();
+}
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xorel_codm_external_NativeBridge_nativeIsMenuInteractive(JNIEnv *, jclass) {
@@ -92,7 +76,16 @@ Java_com_xorel_codm_external_NativeBridge_nativeNeedsContinuousGl(JNIEnv *, jcla
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeStartEsp(JNIEnv *, jclass) { ui_esp_start(); }
+Java_com_xorel_codm_external_NativeBridge_nativeStartEsp(JNIEnv *, jclass) {
+    ui_esp_start();
+}
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xorel_codm_external_NativeBridge_nativeStopEsp(JNIEnv *, jclass) { ui_esp_stop(); }
+Java_com_xorel_codm_external_NativeBridge_nativeStopEsp(JNIEnv *, jclass) {
+    ui_esp_stop();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_xorel_codm_external_NativeBridge_nativeIsEspActive(JNIEnv *, jclass) {
+    return ui_esp_is_active() ? JNI_TRUE : JNI_FALSE;
+}

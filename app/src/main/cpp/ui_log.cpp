@@ -1,4 +1,5 @@
 #include "ui_log.hpp"
+#include "imgui.h"
 #include <cstdarg>
 #include <cstring>
 #include <cstdio>
@@ -46,4 +47,11 @@ void ui_log_copy_all(char *dst, size_t cap) {
         used += ln.size();
     }
     dst[used] = '\0';
+}
+
+void ui_log_imgui_panel() {
+    std::lock_guard<std::mutex> lock(g_mu);
+    ImGui::BeginChild("log", ImVec2(0, 180), true);
+    for (const auto &ln : g_lines) ImGui::TextUnformatted(ln.c_str());
+    ImGui::EndChild();
 }

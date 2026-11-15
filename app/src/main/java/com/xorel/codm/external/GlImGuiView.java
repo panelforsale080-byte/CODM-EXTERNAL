@@ -108,13 +108,7 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
         if (frameQueued || !surfaceReady) return;
         if (!NativeBridge.nativeNeedsContinuousGl()) return;
         frameQueued = true;
-        int delay = 16;
-        try {
-            delay = NativeBridge.nativeGlFrameDelayMs();
-        } catch (Throwable ignored) {
-        }
-        if (delay < 16) delay = 16;
-        postDelayed(drawAgain, delay);
+        postDelayed(drawAgain, 16);
     }
 
     @Override
@@ -129,7 +123,7 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
     public boolean onTouchEvent(MotionEvent event) {
         if (!surfaceReady || !NativeBridge.nativeIsMenuInteractive()) return false;
         try {
-            NativeBridge.nativeTouch(event.getAction(), event.getX(), event.getY());
+            NativeBridge.nativeTouch(event.getActionMasked(), event.getX(), event.getY());
             requestRender();
         } catch (Throwable t) {
             Log.e(TAG, "touch", t);

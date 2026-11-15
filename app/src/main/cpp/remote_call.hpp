@@ -1,5 +1,4 @@
 #pragma once
-#include "mem.hpp"
 #include <cstdint>
 #include <functional>
 #include <sys/types.h>
@@ -9,13 +8,10 @@ struct RemoteSession {
     pid_t pid = 0;
     pid_t tid = 0;
     bool attached = false;
-    bool fpSaved = false;
 #if defined(__aarch64__)
     alignas(8) unsigned char savedRegs[4096] = {};
-    alignas(16) unsigned char savedFp[544] = {};
     uint64_t sp = 0;
 #endif
-    char comm[20] = {};
     char err[160] = {};
 };
 
@@ -28,14 +24,6 @@ uintptr_t remote_session_scratch(RemoteSession &s, int slot, size_t bytes);
 
 bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uintptr_t> &args,
                          uintptr_t &ret_x0);
-
-/** AAPCS64 Vector3 in v0–v2. `in` null = no float args (get_LastPawnPos). */
-bool remote_session_call_vec3(RemoteSession &s, uintptr_t func, uintptr_t x0, const Vec3 *in,
-                              Vec3 &out);
-
-/** Float args/results in v0.. (Quaternion is 4 floats). */
-bool remote_session_call_f(RemoteSession &s, uintptr_t func, uintptr_t x0, const float *in, int inN,
-                           float *out, int outN);
 
 /* Single-shot (attach → one call → detach). */
 bool remote_call(pid_t pid, uintptr_t func, const std::vector<uintptr_t> &args, uintptr_t &ret_x0,

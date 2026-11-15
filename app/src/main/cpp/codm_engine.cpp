@@ -29,6 +29,15 @@ static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
 static uintptr_t g_blob = 0;
 static uintptr_t g_camSlot = 0;
+static uintptr_t g_liveMatch = 0;
+static int g_scanPhase = 0;
+static int g_scanIdle = 0;
+static bool g_scanLoggedDone = false;
+static size_t g_scanMapI = 0;
+static uintptr_t g_scanAt = 0;
+static std::vector<MapsReg> g_scanMaps;
+static std::vector<uintptr_t> g_scanStrs;
+static std::vector<uintptr_t> g_scanKlasses;
 static int g_camNote = 0;
 static bool g_camLogged = false;
 
@@ -331,6 +340,182 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
         }
     }
     return false;
+}
+
+static bool scan_map_ok(const MapsReg &r, bool heap) {
+    if (r.perms[0] != 'r' || r.end <= r.start) return false;
+    const size_t sz = (size_t)(r.end - r.start);
+    if (heap) {
+        if (!std::strchr(r.perms, 'w')) return false;
+        if (sz < 256 * 1024 || sz > 256ull * 1024 * 1024) return false;
+        return r.path.empty() || r.path.find("anon") != std::string::npos ||
+               r.path.find("scudo") != std::string::npos || r.path.find("malloc") != std::string::npos;
+    }
+    if (r.path.find("libunity.so") != std::string::npos || r.path.find("libanogs") != std::string::npos)
+        return false;
+    if (r.path.find("metadata") != std::string::npos || r.path.find("libil2cpp") != std::string::npos ||
+        r.path.find(".dat") != std::string::npos)
+        return sz <= 80ull * 1024 * 1024;
+    if (r.path.find("com.garena.game.codm") != std::string::npos && r.path.find(".so") == std::string::npos)
+        return sz >= 1024 * 1024 && sz <= 80ull * 1024 * 1024;
+    return false;
+}
+
+static bool sig_at(const uint8_t *p, size_t n, size_t i, const char *sig, size_t sigN) {
+    if (i + sigN > n) return false;
+    if (i > 0 && p[i - 1] != 0) return false;
+    return std::memcmp(p + i, sig, sigN) == 0;
+}
+
+static void remember_str(uintptr_t p) {
+    for (uintptr_t s : g_scanStrs)
+        if (s == p) return;
+    if (g_scanStrs.size() < 24) g_scanStrs.push_back(p);
+}
+
+static void remember_klass(uintptr_t k) {
+    for (uintptr_t s : g_scanKlasses)
+        if (s == k) return;
+    if (g_scanKlasses.size() < 16) g_scanKlasses.push_back(k);
+}
+
+static bool read_il2cpp_name(pid_t pid, uintptr_t klass, char *buf, size_t cap);
+static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap);
+
+/** Chunked il2cpp name walk, same idea as the MLBB reader: string -> klass -> live instance. One chunk per tick. */
+static void esp_find_step(pid_t pid) {
+    if (g_liveMatch) return;
+    if (g_scanPhase >= 9) {
+        if (++g_scanIdle < 300) return;
+        g_scanIdle = 0;
+        g_scanPhase = g_scanKlasses.empty() ? 0 : 3;
+        g_scanMapI = 0;
+        g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
+        return;
+    }
+    static const char kSig[][16] = {"PVPGame", "OpenWorldGame", "MatchGame", "PVEGame", "GamePlay"};
+    constexpr size_t kChunk = 256 * 1024;
+    if (g_scanPhase == 0) {
+        g_scanMaps.clear();
+        std::vector<MapsReg> maps;
+        if (!mem_get_maps(pid, maps)) return;
+        for (const auto &r : maps)
+            if (scan_map_ok(r, false)) g_scanMaps.push_back(r);
+        g_scanMapI = 0;
+        g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
+        g_scanPhase = 1;
+        ui_log("[esp] class scan maps=%zu", g_scanMaps.size());
+        if (g_scanMaps.empty()) g_scanPhase = 9;
+        return;
+    }
+    if (g_scanMapI >= g_scanMaps.size()) {
+        if (g_scanPhase == 1) {
+            ui_log("[esp] class strings=%zu", g_scanStrs.size());
+            g_scanPhase = 2;
+            g_scanMapI = 0;
+            g_scanMaps.clear();
+            std::vector<MapsReg> maps;
+            if (mem_get_maps(pid, maps)) {
+                for (const auto &r : maps)
+                    if (scan_map_ok(r, true) ||
+                        (r.perms[0] == 'r' && std::strchr(r.perms, 'w') &&
+                         (r.path.find("libil2cpp") != std::string::npos ||
+                          r.path.find("libunity.so") != std::string::npos)))
+                        g_scanMaps.push_back(r);
+            }
+            g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
+            if (g_scanStrs.empty() || g_scanMaps.empty()) g_scanPhase = 9;
+        } else if (g_scanPhase == 2) {
+            ui_log("[esp] class klasses=%zu", g_scanKlasses.size());
+            g_scanPhase = g_scanKlasses.empty() ? 9 : 3;
+            g_scanMapI = 0;
+            g_scanMaps.clear();
+            std::vector<MapsReg> maps;
+            if (g_scanPhase == 3 && mem_get_maps(pid, maps)) {
+                for (const auto &r : maps)
+                    if (scan_map_ok(r, true)) g_scanMaps.push_back(r);
+            }
+            g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
+            if (g_scanPhase == 3 && g_scanMaps.empty()) g_scanPhase = 9;
+        } else {
+            if (!g_scanLoggedDone) {
+                g_scanLoggedDone = true;
+                ui_log("[esp] class scan finished, no live match");
+            }
+            g_scanPhase = 9;
+        }
+        return;
+    }
+    const MapsReg &r = g_scanMaps[g_scanMapI];
+    if (g_scanAt < r.start) g_scanAt = r.start;
+    if (g_scanAt >= r.end) {
+        ++g_scanMapI;
+        g_scanAt = 0;
+        return;
+    }
+    const size_t n = std::min(kChunk, (size_t)(r.end - g_scanAt));
+    std::vector<uint8_t> buf(n);
+    if (!mem_read(pid, g_scanAt, buf.data(), n)) {
+        g_scanAt += n;
+        return;
+    }
+    if (g_scanPhase == 1) {
+        for (size_t i = 0; i + 8 < n; ++i) {
+            for (const auto &sig : kSig) {
+                const size_t sn = std::strlen(sig) + 1;
+                if (!sig_at(buf.data(), n, i, sig, sn)) continue;
+                remember_str(g_scanAt + i);
+            }
+        }
+    } else if (g_scanPhase == 2) {
+        for (size_t i = 0; i + 8 <= n; i += 8) {
+            uintptr_t q = 0;
+            std::memcpy(&q, buf.data() + i, 8);
+            bool hit = false;
+            for (uintptr_t s : g_scanStrs)
+                if (q == s) hit = true;
+            if (!hit) continue;
+            const uintptr_t site = g_scanAt + i;
+            for (uintptr_t off : {uintptr_t{0x10}, uintptr_t{0x18}}) {
+                if (site < off) continue;
+                const uintptr_t cand = site - off;
+                char name[32] = {};
+                if (!read_il2cpp_name(pid, cand, name, sizeof(name))) continue;
+                if (std::strcmp(name, "GamePlay") == 0 && cand != g_gameplayKlass) {
+                    g_gameplayKlass = cand;
+                    uintptr_t slot = 0;
+                    if (slot_from_gameplay(pid, cand, slot)) {
+                        g_matchSlot = slot;
+                        g_slotLocked = true;
+                        g_slotHot = false;
+                    }
+                }
+                if (std::strcmp(name, "PVPGame") == 0 || std::strcmp(name, "OpenWorldGame") == 0 ||
+                    std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVEGame") == 0)
+                    remember_klass(cand);
+            }
+        }
+    } else if (g_scanPhase == 3) {
+        for (size_t i = 0; i + 8 <= n; i += 8) {
+            uintptr_t q = 0;
+            std::memcpy(&q, buf.data() + i, 8);
+            bool hit = false;
+            for (uintptr_t k : g_scanKlasses)
+                if (q == k) hit = true;
+            if (!hit) continue;
+            const uintptr_t obj = g_scanAt + i;
+            uintptr_t list = 0;
+            int sz = 0;
+            if (!mem_read(pid, obj + codm_off::kEnemyPawns, list) || !pawn_list_ok(pid, list, sz, true)) continue;
+            g_liveMatch = obj;
+            char name[32] = {};
+            instance_is_match(pid, obj, name, sizeof(name));
+            ui_log("[esp] live %s=0x%llx pawns=%d", name[0] ? name : "match", (unsigned long long)obj, sz);
+            g_scanPhase = 9;
+            return;
+        }
+    }
+    g_scanAt += n > 16 ? n - 16 : n;
 }
 
 static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot);
@@ -819,6 +1004,15 @@ void codm_reset() {
     g_nameScanDone = false;
     g_gameplayKlass = 0;
     g_blob = 0;
+    g_liveMatch = 0;
+    g_scanPhase = 0;
+    g_scanIdle = 0;
+    g_scanLoggedDone = false;
+    g_scanMapI = 0;
+    g_scanAt = 0;
+    g_scanMaps.clear();
+    g_scanStrs.clear();
+    g_scanKlasses.clear();
     g_camSlot = 0;
     g_camNote = 0;
     g_camLogged = false;
@@ -1085,9 +1279,15 @@ void codm_tick(CodmFrame &out) {
     uintptr_t match = 0;
     mem_read(pid, g_matchSlot, match);
     if (!mem_ptr_ok(match)) {
+        if (g_liveMatch && !instance_is_match(pid, g_liveMatch, nullptr, 0)) g_liveMatch = 0;
+        esp_find_step(pid);
+        if (g_matchSlot) mem_read(pid, g_matchSlot, match);
+        if (!mem_ptr_ok(match) && g_liveMatch) match = g_liveMatch;
         uintptr_t better = 0;
         uintptr_t obj = 0;
-        if (g_blob && slot_from_blob(pid, g_blob, better) && mem_read(pid, better, obj) && mem_ptr_ok(obj)) {
+        if (mem_ptr_ok(match)) {
+            // live instance or a static field that just became non-null
+        } else if (g_blob && slot_from_blob(pid, g_blob, better) && mem_read(pid, better, obj) && mem_ptr_ok(obj)) {
             g_matchSlot = better;
             match = obj;
         } else {
@@ -1112,7 +1312,8 @@ void codm_tick(CodmFrame &out) {
                     loggedEmpty = true;
                     ui_log("[esp] s_MatchGame empty (lobby) camera=%s", cam);
                 }
-                std::snprintf(out.status, sizeof(out.status), "lobby — enter a match  camera=%s", cam);
+                std::snprintf(out.status, sizeof(out.status), "lobby — class scan phase %d  camera=%s", g_scanPhase,
+                              cam);
                 return;
             }
         }
@@ -1140,6 +1341,16 @@ void codm_tick(CodmFrame &out) {
                 listPtr = lp;
                 size = sz;
             }
+        }
+    }
+    if (!listPtr || size <= 0) {
+        esp_find_step(pid);
+        uintptr_t liveList = 0;
+        int liveSize = 0;
+        if (g_liveMatch && find_pawn_list(pid, g_liveMatch, liveList, liveSize)) {
+            match = g_liveMatch;
+            listPtr = liveList;
+            size = liveSize;
         }
     }
     if (!listPtr || size <= 0) {

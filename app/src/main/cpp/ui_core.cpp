@@ -3,6 +3,7 @@
 #include "proc.hpp"
 #include "ui_log.hpp"
 #include "clip_android.hpp"
+#include "jnmaini_ui/jnmaini_menu.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_android.h"
@@ -25,6 +26,7 @@ static std::atomic<pid_t> g_wantPid{0};
 static bool g_autoFind = true;
 static bool g_patchAnogs = true;
 static CodmFrame g_last{};
+static bool g_jnmaini_toggled = true;
 
 static void attach_pid(pid_t p, const char *why) {
     char cmd[256];
@@ -80,6 +82,7 @@ void ui_gl_surface_created() {
     ImGui::CreateContext();
     ImGui_ImplAndroid_Init(nullptr);
     ImGui_ImplOpenGL3_Init("#version 300 es");
+    jnmaini_style_init_once();
 }
 
 void ui_gl_surface_changed(int w, int h) {
@@ -102,8 +105,14 @@ void ui_touch(int action, float x, float y) {
     (void)y;
 }
 
-void ui_open_menu() { g_menu.store(true); }
-void ui_toggle_menu() { g_menu.store(!g_menu.load()); }
+void ui_open_menu() {
+    g_menu.store(true);
+    g_jnmaini_toggled = true;
+}
+void ui_toggle_menu() {
+    g_menu.store(!g_menu.load());
+    if (g_menu.load()) g_jnmaini_toggled = true;
+}
 void ui_minimize_menu() { g_menu.store(false); }
 bool ui_menu_interactive() { return g_menu.load(); }
 bool ui_needs_continuous_gl() { return g_menu.load() || g_espOn.load(); }
@@ -125,44 +134,32 @@ void ui_esp_stop() {
 bool ui_esp_is_active() { return g_espOn.load(); }
 void ui_sync_menu_touch_state() {}
 
-static void draw_menu() {
-    ImGui::SetNextWindowSize(ImVec2(520, 480), ImGuiCond_FirstUseEver);
-    bool menuOpen = g_menu.load();
-    if (!ImGui::Begin("CODM EXTERNAL (jnmaini)", &menuOpen)) {
-        g_menu.store(menuOpen);
-        ImGui::End();
-        return;
-    }
-    g_menu.store(menuOpen);
+void jnmaini_draw_external_panel() {
     ImGui::Text("Target: com.garena.game.codm");
     ImGui::Checkbox("Auto find PID", &g_autoFind);
-    ImGui::Checkbox("Auto-patch anogs (hooks.h BYPASS)", &g_patchAnogs);
+    ImGui::Checkbox("Auto-patch anogs (hooks.h)", &g_patchAnogs);
     if (ImGui::Button("Scan + attach")) {
-        ProcCandidate c[16];
-        proc_list_codm(c, 16);
         pid_t best = proc_find_codm_best();
         if (best > 0) attach_pid(best, "scan");
     }
     ImGui::SameLine();
     if (ImGui::Button("Re-patch anogs")) codm_auto_patch_anogs();
-
     const pid_t pid = g_wantPid.load();
-    ImGui::SeparatorText("Status");
-    ImGui::Text("PID: %d", (int)pid);
-    ImGui::TextWrapped("%s", g_last.status[0] ? g_last.status : "idle");
-    ImGui::Text("unity=0x%llx anogs=0x%llx enemies=%d",
-                (unsigned long long)g_last.unity, (unsigned long long)g_last.anogs, g_last.enemies);
-
-    ImGui::SeparatorText("Log");
+    ImGui::Text("PID %d | %s", (int)pid, g_last.status[0] ? g_last.status : "idle");
+    ImGui::Text("unity=0x%llx anogs=0x%llx enemies=%d", (unsigned long long)g_last.unity,
+                (unsigned long long)g_last.anogs, g_last.enemies);
     ui_log_imgui_panel();
-    ImGui::End();
 }
 
 void ui_gl_draw_frame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w > 0 ? g_w : 1, g_h > 0 ? g_h : 1);
     ImGui::NewFrame();
-    if (g_menu.load()) draw_menu();
+    if (g_menu.load()) {
+        if (!g_jnmaini_toggled) g_jnmaini_toggled = true;
+        jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
+        if (!g_jnmaini_toggled) g_menu.store(false);
+    }
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }

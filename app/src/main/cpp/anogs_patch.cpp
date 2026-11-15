@@ -1,7 +1,12 @@
 #include "anogs_patch.hpp"
 #include "mem.hpp"
+#include "ui_log.hpp"
+
+#include <android/log.h>
 #include <cstdio>
 #include <cstdint>
+
+#define CODMTAG "CodmAnogs"
 
 // AUTO-GENERATED from vendor/jnmaini/hooks.h — run tools/sync_anogs_bypass.py
 
@@ -9,21 +14,45 @@ static const uint32_t kBypassOff[] = {
     0x204218,
     0x45B334,
     0x44A714,
-    0x48F964
+    0x48F964,
+};
+
+static const char *kBypassSym[] = {
+    "BYPASS@0x204218",
+    "BYPASS@0x45B334",
+    "BYPASS@0x44A714",
+    "BYPASS@0x48F964",
 };
 
 static const uint8_t kArm64Mov0Ret[8] = {0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6};
 
 int anogs_apply_bypass(pid_t pid, uintptr_t base, char *log, size_t logCap) {
-    if (!pid || !base) return 0;
+    if (!pid || !base) {
+        ui_log("[anogs] hooks.h BYPASS skip — no pid/base");
+        return 0;
+    }
+    ui_log("[anogs] hooks.h BYPASS start pid=%d libanogs=0x%llx", (int)pid, (unsigned long long)base);
+    __android_log_print(ANDROID_LOG_INFO, CODMTAG, "BYPASS start pid=%d base=0x%llx", (int)pid,
+                        (unsigned long long)base);
+
     int ok = 0;
-    for (uint32_t off : kBypassOff) {
+    const size_t n = sizeof(kBypassOff) / sizeof(kBypassOff[0]);
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t off = kBypassOff[i];
         const uintptr_t addr = base + off;
         if (mem_write(pid, addr, kArm64Mov0Ret, sizeof(kArm64Mov0Ret))) {
             ++ok;
+            ui_log("[anogs] hooks.h %s OK @ 0x%llx", kBypassSym[i], (unsigned long long)addr);
+            __android_log_print(ANDROID_LOG_INFO, CODMTAG, "%s OK addr=0x%llx", kBypassSym[i],
+                                (unsigned long long)addr);
             if (log && logCap)
-                std::snprintf(log, logCap, "patched 0x%x @ %llx", off, (unsigned long long)addr);
+                std::snprintf(log, logCap, "%s OK", kBypassSym[i]);
+        } else {
+            ui_log("[anogs] hooks.h %s FAIL write", kBypassSym[i]);
+            __android_log_print(ANDROID_LOG_WARN, CODMTAG, "%s FAIL", kBypassSym[i]);
         }
     }
+    ui_log("[anogs] hooks.h BYPASS done %d/%zu", ok, n);
+    __android_log_print(ANDROID_LOG_INFO, CODMTAG, "BYPASS done %d/%zu", ok, (unsigned)n);
     return ok;
 }

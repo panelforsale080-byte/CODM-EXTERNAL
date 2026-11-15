@@ -31,15 +31,22 @@ void codm_attach(pid_t pid) {
 
 bool codm_auto_patch_anogs() {
     const pid_t pid = g_pid.load();
-    if (!pid || !g_anogs) return false;
+    if (!pid) {
+        ui_log("[anogs] auto-patch: no CODM pid");
+        return false;
+    }
+    if (!g_anogs) {
+        ui_log("[anogs] auto-patch: libanogs.so not mapped");
+        return false;
+    }
     char msg[120] = {};
     const int n = anogs_apply_bypass(pid, g_anogs, msg, sizeof(msg));
     if (n > 0) {
         g_anogsPatched = true;
-        ui_log("[anogs] auto BYPASS %d/4 (%s)", n, msg);
+        ui_log("[anogs] auto-patch SUCCESS %d slot(s) from hooks.h (%s)", n, msg);
         return true;
     }
-    ui_log("[anogs] patch failed");
+    ui_log("[anogs] auto-patch FAILED (hooks.h BYPASS)");
     return false;
 }
 

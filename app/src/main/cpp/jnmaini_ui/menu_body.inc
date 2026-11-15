@@ -4,7 +4,7 @@ if (isToggled)
 ImVec2 center2 = ImGui::GetMainViewport()->GetCenter();
 ImGui::SetNextWindowPos(center2, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 ImGui::SetNextWindowSize(ImVec2(830, 500)); 
-ImGui::PushFont(Crozn);
+if (ImFont* __menuTitle = jnmaini_title_font()) ImGui::PushFont(__menuTitle);
 if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
 {
     DrawMacOSHeaderButtons();
@@ -286,6 +286,6 @@ if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
     
     ImGui::EndChild();
 }
-ImGui::PopFont();
+if (jnmaini_title_font()) ImGui::PopFont();
 ImGui::End();
 }

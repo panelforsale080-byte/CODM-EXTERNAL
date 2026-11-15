@@ -100,7 +100,6 @@ public class GlImGuiView extends GLSurfaceView implements GLSurfaceView.Renderer
             scheduleNextFrame();
         } catch (Throwable t) {
             Log.e(TAG, "drawFrame", t);
-            surfaceReady = false;
         }
     }
 

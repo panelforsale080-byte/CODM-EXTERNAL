@@ -80,9 +80,11 @@ void ui_set_display_size(int w, int h) {
 void ui_gl_surface_created() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    jnmaini_style_init_once();
     ImGui_ImplAndroid_Init(nullptr);
     ImGui_ImplOpenGL3_Init("#version 300 es");
-    jnmaini_style_init_once();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    ui_log("[ui] GL + jnmaini fonts ready");
 }
 
 void ui_gl_surface_changed(int w, int h) {
@@ -96,13 +98,26 @@ void ui_gl_surface_destroyed() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
     ImGui::DestroyContext();
+    jnmaini_style_shutdown();
 }
 
 void ui_touch(int action, float x, float y) {
-    ImGui_ImplAndroid_HandleInputEvent(nullptr);
-    (void)action;
-    (void)x;
-    (void)y;
+    if (!ImGui::GetCurrentContext()) return;
+    ImGuiIO &io = ImGui::GetIO();
+    io.AddMousePosEvent(x, y);
+    switch (action) {
+    case 0: // ACTION_DOWN
+    case 5: // ACTION_POINTER_DOWN
+        io.AddMouseButtonEvent(0, true);
+        break;
+    case 1: // ACTION_UP
+    case 6: // ACTION_POINTER_UP
+    case 3: // ACTION_CANCEL
+        io.AddMouseButtonEvent(0, false);
+        break;
+    default:
+        break;
+    }
 }
 
 void ui_open_menu() {
@@ -152,10 +167,15 @@ void jnmaini_draw_external_panel() {
 }
 
 void ui_gl_draw_frame() {
+    if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplAndroid_NewFrame(g_w > 0 ? g_w : 1, g_h > 0 ? g_h : 1);
+    ImGui_ImplAndroid_NewFrame(g_w, g_h);
     ImGui::NewFrame();
-    if (g_menu.load()) jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
+    if (g_menu.load()) {
+        ImGuiIO &io = ImGui::GetIO();
+        if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
+        jnmaini_draw_frame(true, g_jnmaini_toggled, &g_last);
+    }
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }

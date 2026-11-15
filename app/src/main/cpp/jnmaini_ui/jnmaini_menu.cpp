@@ -60,10 +60,19 @@ void jnmaini_style_init_once() {
     ImFontConfig icons_config;
     icons_config.MergeMode = true;
     icons_config.PixelSnapH = true;
-    io.Fonts->AddFontFromMemoryCompressedTTF(font_awesome_data, font_awesome_size, 24.0f, &icons_config,
-                                            icons_ranges);
+    if (font_awesome_data && font_awesome_size > 0) {
+        io.Fonts->AddFontFromMemoryCompressedTTF(font_awesome_data, font_awesome_size, 24.0f, &icons_config,
+                                                icons_ranges);
+    }
     io.Fonts->Build();
 }
+
+void jnmaini_style_shutdown() {
+    g_styleDone = false;
+    Crozn = nullptr;
+}
+
+ImFont *jnmaini_title_font() { return Crozn; }
 
 static void draw_logo_hud(bool& isToggled) {
     if (checkboxStates["HAND::CAM"]) {
@@ -77,7 +86,9 @@ static void draw_logo_hud(bool& isToggled) {
     if (ImGui::Begin("LogoOverlay", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoResize |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
-        float fps = 1.0f / ImGui::GetIO().DeltaTime;
+        float dt = ImGui::GetIO().DeltaTime;
+        if (dt < 1e-6f) dt = 1.f / 60.f;
+        float fps = 1.0f / dt;
         float size = 40.0f;
         float radius = size * 0.5f;
         ImVec2 pos = ImGui::GetCursorScreenPos();

@@ -52,22 +52,14 @@ bool CustomSliderFloat(const char* label, float* v, float v_min, float v_max, co
 }
 
 void DrawMacOSHeaderButtons() {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    ImVec2 winPos = ImGui::GetWindowPos();
-    ImVec2 winPad = ImGui::GetStyle().WindowPadding;
-    float radius = 7.0f;
-    float spacing = 20.0f;
-    ImVec2 circlePos = ImVec2(winPos.x + winPad.x + radius + 4, winPos.y + winPad.y + radius + 4);
-    draw->AddCircleFilled(circlePos, radius, IM_COL32(255, 92, 85, 255));
-    draw->AddCircleFilled(ImVec2(circlePos.x + spacing, circlePos.y), radius, IM_COL32(255, 189, 47, 255));
-    ImGui::SetCursorScreenPos(ImVec2(circlePos.x - radius, circlePos.y - radius));
-    if (ImGui::InvisibleButton("closeBtn", ImVec2(radius * 2, radius * 2))) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.95f, 0.72f, 0.15f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.f, 0.82f, 0.25f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.85f, 0.6f, 0.05f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.f));
+    if (ImGui::Button("MINIMIZE", ImVec2(-1.f, 64.f))) {
         if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
     }
-    ImGui::SetCursorScreenPos(ImVec2(circlePos.x + spacing - radius, circlePos.y - radius));
-    if (ImGui::InvisibleButton("minBtn", ImVec2(radius * 2, radius * 2))) {
-        if (g_jnmaini_menu_open) *g_jnmaini_menu_open = false;
-    }
+    ImGui::PopStyleColor(4);
 }
 
 

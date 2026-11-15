@@ -29,7 +29,7 @@ static std::atomic<pid_t> g_wantPid{0};
 static bool g_autoFind = true;
 static bool g_patchAnogs = true;
 static CodmFrame g_last{};
-static bool g_panelOpen = true;
+static bool g_panelOpen = false;
 static std::atomic<bool> g_passThroughReq{false};
 static const char *g_glsl = "#version 300 es";
 

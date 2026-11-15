@@ -7,7 +7,7 @@
 }
 
 # Manifest components and the view created from code.
--keep class com.mlbb.esp.pure.EspActivity { *; }
+-keep class com.xorel.codm.external.EspActivity { *; }
 -keep class com.mlbb.esp.pure.OverlayService { *; }
 -keep class com.mlbb.esp.pure.GlImGuiView { *; }
 -keep class com.mlbb.esp.pure.OverlayRootLayout { *; }

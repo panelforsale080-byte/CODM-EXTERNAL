@@ -23,7 +23,7 @@
     <string name="fab_stop_esp">Stop ESP</string>
     <string name="card_steps_title">Quick start</string>
     <string name="step_1">Allow overlay, then launch the floating layer.</string>
-    <string name="step_2">In match: Find pid → Resolve → Start / Stop ESP inside the overlay menu.</string>
+    <string name="step_2">Open CODM, then in overlay: Start ESP → auto attach + anogs patch from hooks.h.</string>
     <string name="step_3">Tap the Xorel icon to open settings; close the window for touch-through play.</string>
     <string name="overlay_running">Overlay is already running</string>
     <string name="toast_need_overlay">Allow overlay permission first</string>

@@ -147,54 +147,6 @@ public class EspActivity extends Activity {
         all.start();
     }
 
-    private void verifyLicense() {
-        final String pass = licensePassword.getText().toString().trim();
-        if (pass.isEmpty()) {
-            licenseOk = false;
-            LicenseNative.nativeSetLicenseAttested(false);
-            showLicenseSpinner(false);
-            keyStatus.setVisibility(View.GONE);
-            refreshUiState();
-            return;
-        }
-
-        licenseOk = false;
-        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm != null) imm.hideSoftInputFromWindow(licensePassword.getWindowToken(), 0);
-        showLicenseSpinner(true);
-        keyStatus.setVisibility(View.GONE);
-        btnStart.setEnabled(false);
-
-        LicenseGate.verifyAsync(
-                pass,
-                (ok, message) -> {
-                    if (isFinishing()) return;
-                    showLicenseSpinner(false);
-                    licenseOk = ok;
-                    if (ok) prefs.edit().putString("password", pass).apply();
-                    else LicenseNative.nativeSetLicenseAttested(false);
-                    keyStatus.setVisibility(View.VISIBLE);
-                    if (ok) {
-                        keyStatus.setText(R.string.key_valid);
-                        keyStatus.setTextColor(ContextCompat.getColor(this, R.color.xorel_success));
-                    } else {
-                        if ("expired".equals(message)) keyStatus.setText(R.string.key_expired);
-                        else if ("password".equals(message)) keyStatus.setText(R.string.key_wrong_password);
-                        else if ("signature".equals(message)) keyStatus.setText(R.string.key_bad_signature);
-                        else if ("invalid".equals(message)) keyStatus.setText(R.string.key_invalid_format);
-                        else keyStatus.setText(R.string.key_network_error);
-                        keyStatus.setTextColor(ContextCompat.getColor(this, R.color.xorel_error));
-                    }
-                    refreshUiState();
-                });
-    }
-
-    private void showLicenseSpinner(boolean on) {
-        keyProgress.setVisibility(on ? View.VISIBLE : View.GONE);
-        btnCheckLicense.setEnabled(!on);
-        btnCheckLicense.setText(on ? "" : getString(R.string.btn_check_license));
-    }
-
     private void refreshUiState() {
         boolean overlayOk =
                 Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this);

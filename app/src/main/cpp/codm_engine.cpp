@@ -383,6 +383,7 @@ static void remember_klass(uintptr_t k) {
 
 static bool read_il2cpp_name(pid_t pid, uintptr_t klass, char *buf, size_t cap);
 static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap);
+static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size);
 
 /** Chunked il2cpp name walk, same idea as the MLBB reader: string -> klass -> live instance. One chunk per tick. */
 static void esp_find_step(pid_t pid) {

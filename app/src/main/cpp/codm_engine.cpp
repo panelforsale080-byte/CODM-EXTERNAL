@@ -7,6 +7,7 @@
 #include "remote_call.hpp"
 #include "ui_log.hpp"
 #include "jnmaini_ui/weapon_category_config.h"
+#include "CodmExternalEsp/Matrix4x4.h"
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +28,7 @@ static bool g_slotHot = false;
 static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
 static uintptr_t g_blob = 0;
+static uintptr_t g_camSlot = 0;
 
 static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -538,6 +540,99 @@ static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot) {
     return false;
 }
 
+static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot) {
+    uint32_t ins[8] = {};
+    if (nins > 8) nins = 8;
+    if (nins < 1 || !mem_read(pid, func, ins, (size_t)nins * 4)) return false;
+    uintptr_t reg[32] = {};
+    bool known[32] = {};
+    slot = 0;
+    for (int i = 0; i < nins; ++i) {
+        const uint32_t insn = ins[i];
+        const int rd = insn & 31;
+        const int rn = (insn >> 5) & 31;
+        if (insn == 0xD65F03C0u) break;
+        uintptr_t page = 0;
+        if (arm64_adrp(insn, func + (uintptr_t)i * 4, page)) {
+            reg[rd] = page;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFF800000u) == 0x91000000u && known[rn]) {
+            uint32_t imm = (insn >> 10) & 0xFFF;
+            if (((insn >> 22) & 3) == 1) imm <<= 12;
+            reg[rd] = reg[rn] + imm;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFFC00000u) != 0xF9400000u || !known[rn]) continue;
+        const uintptr_t src = reg[rn] + ((insn >> 10) & 0xFFF) * 8u;
+        uintptr_t val = 0;
+        if (rd == 0) slot = src;
+        if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+            reg[rd] = val;
+            known[rd] = true;
+        } else {
+            known[rd] = false;
+        }
+    }
+    return slot != 0;
+}
+
+static bool mat_is_proj(const float *m) {
+    if (!std::isfinite(m[0]) || !std::isfinite(m[5]) || !std::isfinite(m[15])) return false;
+    if (std::fabs(m[0]) < 0.2f || std::fabs(m[0]) > 6.f) return false;
+    if (std::fabs(m[5]) < 0.2f || std::fabs(m[5]) > 6.f) return false;
+    if (std::fabs(m[1]) > 0.08f || std::fabs(m[4]) > 0.08f) return false;
+    return std::fabs(m[11]) > 0.5f || std::fabs(m[14]) > 0.5f;
+}
+
+static bool mat_is_view(const float *m) {
+    if (!std::isfinite(m[0]) || !std::isfinite(m[15])) return false;
+    if (std::fabs(m[15] - 1.f) > 0.3f) return false;
+    if (std::fabs(m[11]) > 0.4f) return false;
+    const float s = std::fabs(m[0]) + std::fabs(m[5]) + std::fabs(m[10]);
+    return s > 0.6f && s < 4.5f;
+}
+
+static void fill_camera_vp(pid_t pid, CodmFrame &out) {
+    if (!g_camSlot && !decode_x0_slot(pid, g_unity + codm_off::kCamera_get_main, 4, g_camSlot)) return;
+    uintptr_t cam = 0;
+    if (!mem_read(pid, g_camSlot, cam) || !mem_ptr_ok(cam)) return;
+    uintptr_t native = 0;
+    mem_read(pid, cam + 0x10, native);
+    const uintptr_t roots[2] = {native, cam};
+    for (uintptr_t root : roots) {
+        if (!mem_ptr_ok(root)) continue;
+        uint8_t buf[0x480] = {};
+        if (!mem_read(pid, root, buf, sizeof(buf))) continue;
+        for (int off = 64; off + 64 <= (int)sizeof(buf); off += 4) {
+            const float *proj = reinterpret_cast<float *>(buf + off);
+            const float *view = reinterpret_cast<float *>(buf + off - 64);
+            if (!mat_is_proj(proj) || !mat_is_view(view)) continue;
+            Matrix4x4 vmat;
+            Matrix4x4 pmat;
+            for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 4; ++r) {
+                    vmat.Matrix[r][c] = view[c * 4 + r];
+                    pmat.Matrix[r][c] = proj[c * 4 + r];
+                }
+            }
+            const Matrix4x4 clip = vmat.Mult(pmat, vmat);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) out.vp[r * 4 + c] = clip.Matrix[r][c];
+            out.vpOk = 1;
+            out.viewOk = 1;
+            static int loggedOff = -1;
+            if (loggedOff != off) {
+                loggedOff = off;
+                ui_log("[esp] camera vp view+0x%x proj+0x%x", off - 64, off);
+            }
+            return;
+        }
+    }
+}
+
 static bool read_vec3(pid_t pid, uintptr_t addr, float &x, float &y, float &z) {
     float v[3] = {};
     if (!mem_read(pid, addr, v, sizeof(v))) return false;
@@ -633,6 +728,7 @@ void codm_reset() {
     g_nameScanDone = false;
     g_gameplayKlass = 0;
     g_blob = 0;
+    g_camSlot = 0;
     for (auto &h : g_unityHooksTable) {
         h.haveOrig = false;
         h.applied = false;
@@ -867,6 +963,7 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
+    fill_camera_vp(pid, out);
     codm_auto_patch_unity();
     if (!g_matchSlot) {
         uintptr_t slot = 0;

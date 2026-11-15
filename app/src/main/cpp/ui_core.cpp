@@ -221,7 +221,18 @@ void jnmaini_draw_external_panel() {
 }
 
 static bool project_esp(const CodmFrame &f, float x, float y, float z, float &sx, float &sy) {
-    if (!f.viewOk || g_w <= 0 || g_h <= 0) return false;
+    if (g_w <= 0 || g_h <= 0) return false;
+    if (f.vpOk) {
+        const float *m = f.vp;
+        const float cx = m[0] * x + m[1] * y + m[2] * z + m[3];
+        const float cy = m[4] * x + m[5] * y + m[6] * z + m[7];
+        const float cw = m[12] * x + m[13] * y + m[14] * z + m[15];
+        if (cw < 0.1f) return false;
+        sx = (cx / cw * 0.5f + 0.5f) * (float)g_w;
+        sy = (1.f - (cy / cw * 0.5f + 0.5f)) * (float)g_h;
+        return std::isfinite(sx) && std::isfinite(sy);
+    }
+    if (!f.viewOk) return false;
     const float dx = x - f.camX;
     const float dy = y - f.camY;
     const float dz = z - f.camZ;
@@ -243,7 +254,7 @@ static void draw_world_esp(const CodmFrame &f) {
     std::snprintf(head, sizeof(head), "ENEMIES %d", f.enemies);
     dl->AddText(ImVec2(g_w * 0.5f - 36.f, 36.f), IM_COL32(255, 255, 255, 230), head);
     const bool master = checkboxStates["ESP ENABLE"];
-    if (!master || !f.viewOk) return;
+    if (!master || (!f.viewOk && !f.vpOk)) return;
     const bool name = checkboxStates["ESP NAME"];
     const bool dist = checkboxStates["ESP DISTANCE"];
     for (int i = 0; i < f.shown; ++i) {

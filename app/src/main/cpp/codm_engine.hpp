@@ -21,6 +21,8 @@ struct CodmFrame {
     int enemies = 0;
     int shown = 0;
     int viewOk = 0;
+    int vpOk = 0;
+    float vp[16] = {};
     float camX = 0.f, camY = 0.f, camZ = 0.f;
     float fx = 0.f, fy = 0.f, fz = 1.f;
     float rx = 1.f, ry = 0.f, rz = 0.f;

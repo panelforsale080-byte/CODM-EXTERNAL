@@ -31,6 +31,11 @@ static bool g_patchAnogs = true;
 static CodmFrame g_last{};
 static bool g_jnmaini_toggled = true;
 static std::atomic<bool> g_passThroughReq{false};
+static const char *g_glsl = "#version 300 es";
+
+void ui_gl_set_glsl(const char *version) {
+    if (version && version[0]) g_glsl = version;
+}
 
 static void attach_pid(pid_t p, const char *why) {
     char cmd[256];
@@ -86,7 +91,7 @@ void ui_gl_surface_created() {
     ImGui::CreateContext();
     jnmaini_style_init_once();
     ImGui_ImplAndroid_Init(nullptr);
-    ImGui_ImplOpenGL3_Init("#version 300 es");
+    ImGui_ImplOpenGL3_Init(g_glsl);
     ui_log("[ui] GLES3 + jnmaini fonts ready");
 }
 
@@ -188,7 +193,7 @@ void jnmaini_draw_external_panel() {
 void ui_gl_draw_frame() {
     if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
     glViewport(0, 0, g_w, g_h);
-    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClearColor(0.f, 0.f, 0.f, 0.35f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame(g_w, g_h);

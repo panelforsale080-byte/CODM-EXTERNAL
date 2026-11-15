@@ -9,8 +9,8 @@ if (mh > 500.f) mh = 500.f;
 if (mw < 280.f) mw = 280.f;
 if (mh < 220.f) mh = 220.f;
 ImVec2 center2 = ImGui::GetMainViewport()->GetCenter();
-ImGui::SetNextWindowPos(center2, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_Appearing); 
+ImGui::SetNextWindowPos(center2, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+ImGui::SetNextWindowSize(ImVec2(mw, mh), ImGuiCond_Always); 
 if (ImFont* __menuTitle = jnmaini_title_font()) ImGui::PushFont(__menuTitle);
 if (ImGui::Begin(" ", nullptr, ImGuiWindowFlags_NoTitleBar))
 {

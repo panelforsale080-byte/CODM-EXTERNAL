@@ -12,6 +12,7 @@ import android.view.SurfaceView;
 public class GlImGuiView extends SurfaceView implements SurfaceHolder.Callback {
     private static final String TAG = "GlImGuiView";
     private volatile boolean surfaceReady = false;
+    private boolean attached;
 
     public interface OnGlReadyListener {
         void onGlReady(GlImGuiView view);
@@ -56,22 +57,26 @@ public class GlImGuiView extends SurfaceView implements SurfaceHolder.Callback {
     public void requestRender() {}
 
     @Override
-    public void surfaceCreated(SurfaceHolder holder) {
+    public void surfaceCreated(SurfaceHolder holder) {}
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (attached || width <= 0 || height <= 0) return;
+        attached = true;
         try {
             NativeBridge.nativeAttachWindow(holder.getSurface());
             surfaceReady = true;
             if (readyListener != null) readyListener.onGlReady(this);
         } catch (Throwable t) {
-            Log.e(TAG, "surfaceCreated", t);
+            Log.e(TAG, "surfaceChanged", t);
+            attached = false;
             surfaceReady = false;
         }
     }
 
     @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
-
-    @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+        attached = false;
         surfaceReady = false;
         try {
             NativeBridge.nativeDetachWindow();

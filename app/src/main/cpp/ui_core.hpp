@@ -4,6 +4,7 @@
 
 void ui_set_display_size(int w, int h);
 void ui_gl_surface_created();
+void ui_gl_set_glsl(const char *version);
 void ui_gl_surface_changed(int w, int h);
 void ui_gl_surface_destroyed();
 void ui_gl_draw_frame();

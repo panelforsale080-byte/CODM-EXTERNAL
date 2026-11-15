@@ -17,6 +17,7 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.WindowManager;
+import android.widget.ImageButton;
 
 /** One full-screen GLES surface. The menu is ImGui only. */
 public class OverlayService extends Service {
@@ -30,7 +31,9 @@ public class OverlayService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private WindowManager wm;
     private GlImGuiView glView;
+    private ImageButton logoBtn;
     private WindowManager.LayoutParams surfaceLp;
+    private WindowManager.LayoutParams logoLp;
     private int screenW = 1;
     private int screenH = 1;
     private boolean menuExpanded = true;
@@ -80,6 +83,34 @@ public class OverlayService extends Service {
                             PixelFormat.TRANSLUCENT);
             surfaceLp.gravity = Gravity.TOP | Gravity.START;
             wm.addView(glView, surfaceLp);
+
+            int box = dp(64);
+            logoBtn = new ImageButton(this);
+            logoBtn.setBackgroundResource(R.drawable.bg_fab_xorel);
+            logoBtn.setImageResource(R.drawable.ic_xorel_logo);
+            logoBtn.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
+            logoBtn.setPadding(dp(8), dp(8), dp(8), dp(8));
+            logoLp =
+                    new WindowManager.LayoutParams(
+                            box,
+                            box,
+                            type,
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                            PixelFormat.TRANSLUCENT);
+            logoLp.gravity = Gravity.TOP | Gravity.START;
+            logoLp.x = dp(12);
+            logoLp.y = dp(48);
+            logoBtn.setOnClickListener(
+                    v -> {
+                        try {
+                            NativeBridge.nativeOpenMenu();
+                        } catch (Throwable t) {
+                            Log.w(TAG, "logo", t);
+                        }
+                    });
+            logoBtn.setVisibility(android.view.View.GONE);
+            wm.addView(logoBtn, logoLp);
         } catch (Throwable t) {
             Log.e(TAG, "onCreate", t);
             stopSelf();
@@ -102,22 +133,23 @@ public class OverlayService extends Service {
                     if (surfaceLp == null || wm == null || glView == null) return;
                     if (interactive == menuExpanded) return;
                     menuExpanded = interactive;
-                    if (interactive) {
-                        surfaceLp.width = screenW;
-                        surfaceLp.height = screenH;
-                        surfaceLp.x = 0;
-                        surfaceLp.y = 0;
-                    } else {
-                        int box = dp(128);
-                        surfaceLp.width = box;
-                        surfaceLp.height = box;
-                        surfaceLp.x = dp(8);
-                        surfaceLp.y = dp(36);
-                    }
+                    surfaceLp.width = screenW;
+                    surfaceLp.height = screenH;
+                    surfaceLp.x = 0;
+                    surfaceLp.y = 0;
+                    int flags =
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                    | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+                    if (!interactive) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                    surfaceLp.flags = flags;
                     try {
                         wm.updateViewLayout(glView, surfaceLp);
                     } catch (Throwable t) {
-                        Log.w(TAG, "resize overlay", t);
+                        Log.w(TAG, "overlay flags", t);
+                    }
+                    if (logoBtn != null) {
+                        logoBtn.setVisibility(interactive ? android.view.View.GONE : android.view.View.VISIBLE);
                     }
                 };
         if (Looper.myLooper() == Looper.getMainLooper()) apply.run();
@@ -161,6 +193,10 @@ public class OverlayService extends Service {
     public void onDestroy() {
         try {
             if (glView != null) glView.releaseGl();
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (wm != null && logoBtn != null) wm.removeView(logoBtn);
         } catch (Throwable ignored) {
         }
         try {

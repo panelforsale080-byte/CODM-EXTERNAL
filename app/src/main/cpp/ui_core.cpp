@@ -16,6 +16,8 @@
 #include <mutex>
 #include <pthread.h>
 #include <algorithm>
+#include <fstream>
+#include <string>
 #include <thread>
 
 ImVec2 initialScreenSize{0.f, 0.f};
@@ -69,6 +71,34 @@ static void reader_loop() {
                 }
             }
             pid = g_wantPid.load();
+        }
+        if (pid > 0 && g_espOn.load() && !codm_libs_ready()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastScan > std::chrono::seconds(2)) {
+                lastScan = now;
+                pid_t better = proc_find_codm_best();
+                if (better > 0 && better != pid) {
+                    ProcCandidate one{};
+                    one.pid = better;
+                    int u = 0, a = 0;
+                    std::ifstream maps("/proc/" + std::to_string(better) + "/maps");
+                    std::string line;
+                    while (std::getline(maps, line)) {
+                        if (line.find("libunity.so") != std::string::npos) u = 1;
+                        if (line.find("libanogs.so") != std::string::npos) a = 1;
+                    }
+                    if (u || a) {
+                        ui_log("[auto] libs on pid=%d (unity=%d anogs=%d) — switch", (int)better, u, a);
+                        attach_pid(better, "switch");
+                        pid = g_wantPid.load();
+                    }
+                }
+                if (!codm_libs_ready()) {
+                    ui_log("[codm] libs not mapped yet — reread /proc/%d/maps", (int)pid);
+                    codm_attach(pid);
+                    if (codm_libs_ready() && g_patchAnogs) codm_auto_patch_anogs();
+                }
+            }
         }
         if (pid > 0 && !proc_alive(pid)) {
             ui_log("[proc] died — reset");
@@ -199,6 +229,19 @@ void ui_gl_draw_frame() {
     ImGui::NewFrame();
     ImGuiIO &io = ImGui::GetIO();
     if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
+    if (g_last.enemies > 0 || g_last.unity) {
+        ImGui::SetNextWindowPos(ImVec2(g_w * 0.5f, 12.f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+        ImGui::SetNextWindowBgAlpha(0.45f);
+        ImGui::Begin("##esp", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Text("ESP enemies %d", g_last.enemies);
+        for (int i = 0; i < g_last.shown; ++i) {
+            ImGui::Text("#%d  HP %.0f/%.0f  %s", i + 1, g_last.list[i].hp, g_last.list[i].maxHp,
+                        g_last.list[i].alive ? "alive" : "");
+        }
+        ImGui::End();
+    }
     jnmaini_draw_frame(true, g_panelOpen, &g_last);
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

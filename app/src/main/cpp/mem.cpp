@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <fstream>
 #include <mutex>
+#include <unistd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 
@@ -32,7 +33,17 @@ bool mem_maps(pid_t pid, std::vector<MapsReg> &out) {
             continue;
         r.fileOff = off;
         r.path = path;
-        while (!r.path.empty() && r.path[0] == ' ') r.path.erase(0, 1);
+        while (!r.path.empty() && (r.path[0] == ' ' || r.path[0] == '\t')) r.path.erase(0, 1);
+        if (r.path.empty() || r.path.find(".so") == std::string::npos) {
+            char linkPath[96];
+            char target[512];
+            std::snprintf(linkPath, sizeof(linkPath), "/proc/%d/map_files/%lx-%lx", (int)pid, r.start, r.end);
+            const ssize_t n = readlink(linkPath, target, sizeof(target) - 1);
+            if (n > 0) {
+                target[n] = '\0';
+                r.path = target;
+            }
+        }
         out.push_back(r);
     }
     std::sort(out.begin(), out.end(),

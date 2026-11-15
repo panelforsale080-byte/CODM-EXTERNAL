@@ -156,7 +156,6 @@ void ui_esp_stop() {
 }
 
 bool ui_esp_is_active() { return g_espOn.load(); }
-void ui_sync_menu_touch_state() {}
 
 void jnmaini_draw_external_panel() {
     ImGui::Text("Target: com.garena.game.codm");

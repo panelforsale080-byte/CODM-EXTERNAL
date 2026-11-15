@@ -26,6 +26,7 @@ static bool g_slotLocked = false;
 static bool g_slotHot = false;
 static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
+static uintptr_t g_blob = 0;
 
 static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -385,7 +386,10 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
                 known[rd] = false;
                 continue;
             }
-            if (rd != 0 && !named_klass(pid, val, "GamePlay")) staticBlob = val;
+            if (rd != 0 && !named_klass(pid, val, "GamePlay")) {
+                staticBlob = val;
+                g_blob = val;
+            }
             if (!loggedPtr) {
                 loggedPtr = true;
                 char txt[24] = {};
@@ -418,6 +422,10 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
         g_gameplayKlass = klass;
         if (slot_from_gameplay(pid, klass, slot)) return true;
     }
+    if (g_blob && slot_from_blob(pid, g_blob, slot)) {
+        g_slotHot = false;
+        return true;
+    }
     if (x0Slot) {
         slot = x0Slot;
         g_slotHot = true;
@@ -433,6 +441,51 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
     }
     return false;
 }
+
+static bool read_il2cpp_name(pid_t pid, uintptr_t klass, char *buf, size_t cap) {
+    if (!buf || cap < 2) return false;
+    buf[0] = 0;
+    for (uintptr_t off = 0x10; off <= 0x18; off += 8) {
+        uintptr_t p = 0;
+        if (!mem_read(pid, klass + off, p) || !mem_ptr_ok(p)) continue;
+        char tmp[32] = {};
+        if (!mem_read(pid, p, tmp, sizeof(tmp) - 1)) continue;
+        bool ok = tmp[0] >= 'A' && tmp[0] <= 'Z';
+        size_t n = 0;
+        for (; ok && tmp[n] && n < sizeof(tmp) - 1; ++n) {
+            const unsigned char c = (unsigned char)tmp[n];
+            ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        }
+        if (!ok || n < 4 || n >= cap) continue;
+        std::memcpy(buf, tmp, n + 1);
+        return true;
+    }
+    return false;
+}
+
+static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap) {
+    uintptr_t klass = 0;
+    if (!mem_read(pid, obj, klass)) return false;
+    for (int depth = 0; depth < 8 && mem_ptr_ok(klass); ++depth) {
+        char name[32] = {};
+        if (read_il2cpp_name(pid, klass, name, sizeof(name))) {
+            const bool match = std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVPGame") == 0 ||
+                               std::strcmp(name, "PVEGame") == 0 || std::strcmp(name, "OpenWorldGame") == 0 ||
+                               std::strcmp(name, "BarGame") == 0 || std::strcmp(name, "MPVEGame") == 0 ||
+                               std::strcmp(name, "BaseRecreationGame") == 0 || std::strcmp(name, "WinnerCircleGame") == 0;
+            if (match) {
+                if (out && cap) std::snprintf(out, cap, "%s", name);
+                return true;
+            }
+        }
+        uintptr_t parent = 0;
+        if (!mem_read(pid, klass + 0x48, parent)) break;
+        klass = parent;
+    }
+    return false;
+}
+
+static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot);
 
 static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size) {
     const uintptr_t prefer[] = {0x178, 0x160, 0x170, 0x168, 0x180, 0x188, 0x198, 0x1A0};
@@ -452,6 +505,33 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
             list = p;
             size = sz;
             ui_log("[esp] pawn list at match+0x%llx size=%d", (unsigned long long)off, sz);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot) {
+    const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8, 0xD8, 0xE0, 0x100, 0x0};
+    for (uintptr_t off : offs) {
+        uintptr_t base = blob;
+        if (off != 0 && (!mem_read(pid, blob + off, base) || !mem_ptr_ok(base))) continue;
+        for (uintptr_t field : {codm_off::kMatchGameField, uintptr_t{0}}) {
+            uintptr_t obj = 0;
+            if (!mem_read(pid, base + field, obj) || !mem_ptr_ok(obj)) continue;
+            char name[32] = {};
+            uintptr_t list = 0;
+            int sz = 0;
+            const bool named = instance_is_match(pid, obj, name, sizeof(name));
+            const bool pawns = find_pawn_list(pid, obj, list, sz);
+            if (!named && !pawns) continue;
+            slot = base + field;
+            static uintptr_t logged = 0;
+            if (logged != slot) {
+                logged = slot;
+                ui_log("[esp] %s blob+0x%llx field+0x%llx pawns=%d", named ? name : "list", (unsigned long long)off,
+                       (unsigned long long)field, sz);
+            }
             return true;
         }
     }
@@ -552,6 +632,7 @@ void codm_reset() {
     g_unityHooks = 0;
     g_nameScanDone = false;
     g_gameplayKlass = 0;
+    g_blob = 0;
     for (auto &h : g_unityHooksTable) {
         h.haveOrig = false;
         h.applied = false;
@@ -814,14 +895,11 @@ void codm_tick(CodmFrame &out) {
     uintptr_t match = 0;
     mem_read(pid, g_matchSlot, match);
     if (!mem_ptr_ok(match)) {
-        uintptr_t alt = 0;
-        uintptr_t altList = 0;
-        int altSize = 0;
-        if (mem_read(pid, g_matchSlot + codm_off::kMatchGameField, alt) && mem_ptr_ok(alt) &&
-            find_pawn_list(pid, alt, altList, altSize)) {
-            g_matchSlot += codm_off::kMatchGameField;
-            match = alt;
-            ui_log("[esp] s_MatchGame is static+0x8 slot=0x%llx pawns=%d", (unsigned long long)g_matchSlot, altSize);
+        uintptr_t better = 0;
+        uintptr_t obj = 0;
+        if (g_blob && slot_from_blob(pid, g_blob, better) && mem_read(pid, better, obj) && mem_ptr_ok(obj)) {
+            g_matchSlot = better;
+            match = obj;
         } else {
             g_match = 0;
             static bool loggedEmpty = false;
@@ -845,11 +923,28 @@ void codm_tick(CodmFrame &out) {
         }
     }
     if (!listPtr || size <= 0) {
+        uintptr_t better = 0;
+        if (g_blob && slot_from_blob(pid, g_blob, better)) {
+            uintptr_t obj = 0;
+            uintptr_t lp = 0;
+            int sz = 0;
+            if (mem_read(pid, better, obj) && find_pawn_list(pid, obj, lp, sz)) {
+                g_matchSlot = better;
+                match = obj;
+                listPtr = lp;
+                size = sz;
+            }
+        }
+    }
+    if (!listPtr || size <= 0) {
         g_match = 0;
         static uintptr_t loggedBad = 0;
         if (loggedBad != match) {
             loggedBad = match;
-            ui_log("[esp] vm_read ptr=0x%llx has no pawn list", (unsigned long long)match);
+            char name[32] = {};
+            instance_is_match(pid, match, name, sizeof(name));
+            ui_log("[esp] vm_read ptr=0x%llx klass=%s has no pawn list", (unsigned long long)match,
+                   name[0] ? name : "?");
         }
         if (!g_gameplayKlass && !g_slotHot) {
             g_matchSlot = 0;

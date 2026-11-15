@@ -42,6 +42,40 @@ static std::vector<uintptr_t> g_scanStrs;
 static std::vector<uintptr_t> g_scanKlasses;
 static int g_camNote = 0;
 static bool g_camLogged = false;
+static bool g_espPeek = false;
+static bool g_ptraceLogged = false;
+static uintptr_t g_altSlot = 0;
+static uintptr_t g_camKlass = 0;
+static std::vector<MapsReg> g_strMaps;
+static int g_ptrHits = 0;
+
+static bool esp_mem(pid_t pid, uintptr_t addr, void *buf, size_t n) {
+    if (!pid || !addr || !buf || !n) return false;
+    if (g_espPeek && n <= 512 && mem_peek(addr, buf, n)) return true;
+    auto vm = mem_read;
+    return vm(pid, addr, buf, n);
+}
+
+template <typename T>
+static bool esp_mem(pid_t pid, uintptr_t addr, T &out) {
+    return esp_mem(pid, addr, &out, sizeof(T));
+}
+
+struct PeekScope {
+    bool on = false;
+    explicit PeekScope(pid_t pid) {
+        on = mem_peek_begin(pid);
+        g_espPeek = on;
+        if (!g_ptraceLogged) {
+            g_ptraceLogged = true;
+            ui_log(on ? "[esp] ptrace read on" : "[esp] ptrace attach fail");
+        }
+    }
+    ~PeekScope() {
+        g_espPeek = false;
+        if (on) mem_peek_end();
+    }
+};
 
 static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
     if ((insn & 0x9F000000u) != 0x90000000u) return false;
@@ -54,15 +88,15 @@ static bool arm64_adrp(uint32_t insn, uintptr_t pc, uintptr_t &page) {
 static bool pawn_list_ok(pid_t pid, uintptr_t list, int &size, bool requirePawn) {
     size = -1;
     if (!mem_ptr_ok(list)) return false;
-    if (!mem_read(pid, list + 0x18, size) || size < 1 || size > 96) return false;
+    if (!esp_mem(pid, list + 0x18, size) || size < 1 || size > 96) return false;
     uintptr_t items = 0;
-    if (!mem_read(pid, list + 0x10, items) || !mem_ptr_ok(items)) return false;
+    if (!esp_mem(pid, list + 0x10, items) || !mem_ptr_ok(items)) return false;
     int32_t maxLen = 0;
-    if (!mem_read(pid, items + 0x18, maxLen) || maxLen < size || maxLen > 256) return false;
+    if (!esp_mem(pid, items + 0x18, maxLen) || maxLen < size || maxLen > 256) return false;
     const int n = size < 4 ? size : 4;
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
-        if (mem_read(pid, items + 0x20 + (uintptr_t)i * 8, pawn) && mem_ptr_ok(pawn)) return true;
+        if (esp_mem(pid, items + 0x20 + (uintptr_t)i * 8, pawn) && mem_ptr_ok(pawn)) return true;
     }
     return !requirePawn;
 }
@@ -71,10 +105,10 @@ static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, i
     if (outSize) *outSize = -1;
     if (!mem_ptr_ok(obj)) return false;
     uintptr_t klass = 0;
-    if (!mem_read(pid, obj, klass) || !mem_ptr_ok(klass)) return false;
+    if (!esp_mem(pid, obj, klass) || !mem_ptr_ok(klass)) return false;
     uintptr_t list = 0;
     int size = -1;
-    if (!mem_read(pid, obj + codm_off::kEnemyPawns, list)) return false;
+    if (!esp_mem(pid, obj + codm_off::kEnemyPawns, list)) return false;
     if (!pawn_list_ok(pid, list, size, true)) return false;
     if (outSize) *outSize = size;
     return true;
@@ -82,7 +116,7 @@ static bool __attribute__((unused)) looks_like_match(pid_t pid, uintptr_t obj, i
 
 static bool cstr_is(pid_t pid, uintptr_t p, const char *s) {
     char buf[24] = {};
-    if (!mem_ptr_ok(p) || !mem_read(pid, p, buf, sizeof(buf) - 1)) return false;
+    if (!mem_ptr_ok(p) || !esp_mem(pid, p, buf, sizeof(buf) - 1)) return false;
     return std::strcmp(buf, s) == 0;
 }
 
@@ -90,7 +124,7 @@ static bool named_klass(pid_t pid, uintptr_t obj, const char *s) {
     if (!mem_ptr_ok(obj)) return false;
     for (uintptr_t off = 0; off <= 0x48; off += 8) {
         uintptr_t p = 0;
-        if (mem_read(pid, obj + off, p) && cstr_is(pid, p, s)) return true;
+        if (esp_mem(pid, obj + off, p) && cstr_is(pid, p, s)) return true;
     }
     return false;
 }
@@ -158,7 +192,7 @@ static bool __attribute__((unused)) walk_getter(pid_t pid, uintptr_t func, const
                 byteOff = (uint32_t)imm9;
             }
             uintptr_t val = 0;
-            const bool ok = mem_read(pid, src, val);
+            const bool ok = esp_mem(pid, src, val);
             if (rd == 0) st.x0Slot = src;
             if (st.fields[rn] && byteOff == codm_off::kMatchGameField) {
                 slot = src;
@@ -182,7 +216,7 @@ static bool __attribute__((unused)) walk_getter(pid_t pid, uintptr_t func, const
             const uintptr_t src = (func + (uintptr_t)i * 4) + (uintptr_t)(imm19 * 4);
             uintptr_t val = 0;
             if (rd == 0) st.x0Slot = src;
-            if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+            if (esp_mem(pid, src, val) && mem_ptr_ok(val)) {
                 st.reg[rd] = val;
                 st.known[rd] = true;
                 st.gameplay[rd] = named_klass(pid, val, "GamePlay");
@@ -230,7 +264,7 @@ static bool slot_from_gameplay(pid_t pid, uintptr_t klass, uintptr_t &slot) {
     const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8};
     for (uintptr_t off : offs) {
         uintptr_t sf = 0;
-        if (!mem_read(pid, klass + off, sf) || !mem_ptr_ok(sf)) continue;
+        if (!esp_mem(pid, klass + off, sf) || !mem_ptr_ok(sf)) continue;
         slot = sf + codm_off::kMatchGameField;
         ui_log("[esp] GamePlay klass=0x%llx static+0x%llx slot=0x%llx", (unsigned long long)klass,
                (unsigned long long)off, (unsigned long long)slot);
@@ -241,7 +275,7 @@ static bool slot_from_gameplay(pid_t pid, uintptr_t klass, uintptr_t &slot) {
 
 static bool klass_from_getter_globals(pid_t pid, uintptr_t func, uintptr_t &klass) {
     uint32_t ins[32] = {};
-    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+    if (!esp_mem(pid, func, ins, sizeof(ins))) return false;
     uintptr_t reg[32] = {};
     bool known[32] = {};
     for (int i = 0; i < 32; ++i) {
@@ -264,7 +298,7 @@ static bool klass_from_getter_globals(pid_t pid, uintptr_t func, uintptr_t &klas
         if ((insn & 0xFFC00000u) != 0xF9400000u || !known[rn]) continue;
         const uintptr_t src = reg[rn] + (((insn >> 10) & 0xFFF) * 8u);
         uintptr_t val = 0;
-        if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
+        if (!esp_mem(pid, src, val) || !mem_ptr_ok(val)) {
             known[rd] = false;
             continue;
         }
@@ -273,7 +307,7 @@ static bool klass_from_getter_globals(pid_t pid, uintptr_t func, uintptr_t &klas
             return true;
         }
         uintptr_t inner = 0;
-        if (mem_read(pid, val, inner) && named_klass(pid, inner, "GamePlay")) {
+        if (esp_mem(pid, val, inner) && named_klass(pid, inner, "GamePlay")) {
             klass = inner;
             return true;
         }
@@ -297,7 +331,7 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
         const uintptr_t end = r.end < limit ? r.end : limit;
         for (uintptr_t a = r.start; a + sizeof(sig) < end && strings.size() < 8;) {
             const size_t n = std::min(buf.size(), (size_t)(end - a));
-            if (!mem_read(pid, a, buf.data(), n)) {
+            if (!esp_mem(pid, a, buf.data(), n)) {
                 a += n ? n : 4096;
                 if (a >= end) break;
                 continue;
@@ -322,7 +356,7 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
                 continue;
             for (uintptr_t a = r.start; a + 8 < r.end;) {
                 const size_t n = std::min(buf.size(), (size_t)(r.end - a));
-                if (!mem_read(pid, a, buf.data(), n)) {
+                if (!esp_mem(pid, a, buf.data(), n)) {
                     a += n ? n : 4096;
                     continue;
                 }
@@ -397,7 +431,7 @@ static void esp_find_step(pid_t pid) {
         return;
     }
     static const char *kSig[] = {"PVPGame", "OpenWorldGame", "MatchGame", "PVEGame", "GamePlay",
-                                 "BaseWorld", "BRGame", "BRCatGame", "DMZGame"};
+                                 "BaseWorld", "BRGame", "BRCatGame", "DMZGame", "PlayerCamera"};
     constexpr size_t kChunk = 2 * 1024 * 1024;
     if (g_scanPhase == 0) {
         g_scanMaps.clear();
@@ -408,6 +442,7 @@ static void esp_find_step(pid_t pid) {
         g_scanMapI = 0;
         g_scanAt = g_scanMaps.empty() ? 0 : g_scanMaps[0].start;
         g_scanPhase = 1;
+        g_strMaps = g_scanMaps;
         ui_log("[esp] class scan maps=%zu", g_scanMaps.size());
         if (g_scanMaps.empty()) g_scanPhase = 9;
         return;
@@ -431,7 +466,9 @@ static void esp_find_step(pid_t pid) {
             ui_log("[esp] class pointer maps=%zu", g_scanMaps.size());
             if (g_scanStrs.empty() || g_scanMaps.empty()) g_scanPhase = 9;
         } else if (g_scanPhase == 2) {
-            ui_log("[esp] class klasses=%zu", g_scanKlasses.size());
+            ui_log("[esp] class klasses=%zu hits=%d world=0x%llx play=0x%llx cam=0x%llx", g_scanKlasses.size(),
+                   g_ptrHits, (unsigned long long)g_worldKlass, (unsigned long long)g_gameplayKlass,
+                   (unsigned long long)g_camKlass);
             g_scanPhase = g_scanKlasses.empty() ? 9 : 3;
             g_scanMapI = 0;
             g_scanMaps.clear();
@@ -460,7 +497,7 @@ static void esp_find_step(pid_t pid) {
     }
     const size_t n = std::min(kChunk, (size_t)(r.end - g_scanAt));
     std::vector<uint8_t> buf(n);
-    if (!mem_read(pid, g_scanAt, buf.data(), n)) {
+    if (!esp_mem(pid, g_scanAt, buf.data(), n)) {
         g_scanAt += n;
         return;
     }
@@ -476,12 +513,27 @@ static void esp_find_step(pid_t pid) {
         for (size_t i = 0; i + 8 <= n; i += 8) {
             uintptr_t q = 0;
             std::memcpy(&q, buf.data() + i, 8);
+            if (!mem_ptr_ok(q)) continue;
             bool hit = false;
             for (uintptr_t s : g_scanStrs)
                 if (q == s) hit = true;
+            if (!hit && (r.path.find("libil2cpp") != std::string::npos ||
+                         r.path.find("libunity.so") != std::string::npos)) {
+                bool inStr = false;
+                for (const auto &sm : g_strMaps)
+                    if (q >= sm.start && q + 12 < sm.end) inStr = true;
+                if (inStr) {
+                    char tmp[24] = {};
+                    if (esp_mem(pid, q, tmp, sizeof(tmp) - 1)) {
+                        for (const char *sig : kSig)
+                            if (std::strcmp(tmp, sig) == 0) hit = true;
+                    }
+                }
+            }
             if (!hit) continue;
+            ++g_ptrHits;
             const uintptr_t site = g_scanAt + i;
-            for (uintptr_t off : {uintptr_t{0x10}, uintptr_t{0x18}}) {
+            for (uintptr_t off = 0x8; off <= 0x40; off += 8) {
                 if (site < off) continue;
                 const uintptr_t cand = site - off;
                 char name[32] = {};
@@ -494,8 +546,17 @@ static void esp_find_step(pid_t pid) {
                         g_slotLocked = true;
                         g_slotHot = false;
                     }
+                    ui_log("[esp] ptrace klass GamePlay=0x%llx", (unsigned long long)cand);
                 }
-                if (std::strcmp(name, "BaseWorld") == 0) g_worldKlass = cand;
+                if (std::strcmp(name, "BaseWorld") == 0 && cand != g_worldKlass) {
+                    g_worldKlass = cand;
+                    g_ptraceWorldTried = false;
+                    ui_log("[esp] ptrace klass BaseWorld=0x%llx", (unsigned long long)cand);
+                }
+                if (std::strcmp(name, "PlayerCamera") == 0 && cand != g_camKlass) {
+                    g_camKlass = cand;
+                    ui_log("[esp] ptrace klass PlayerCamera=0x%llx", (unsigned long long)cand);
+                }
                 if (std::strcmp(name, "PVPGame") == 0 || std::strcmp(name, "OpenWorldGame") == 0 ||
                     std::strcmp(name, "MatchGame") == 0 || std::strcmp(name, "PVEGame") == 0 ||
                     std::strcmp(name, "BRGame") == 0 || std::strcmp(name, "BRCatGame") == 0 ||
@@ -518,10 +579,11 @@ static void esp_find_step(pid_t pid) {
             int sz = 0;
             const bool pawns = find_pawn_list(pid, obj, list, sz);
             if (!named && !pawns) {
-                for (uintptr_t poff : {uintptr_t{0x48}, uintptr_t{0x58}}) {
+                for (uintptr_t poff : {uintptr_t{0x48}, uintptr_t{0x58}, uintptr_t{0x60}, uintptr_t{0x68}}) {
                     if (obj < poff) continue;
                     char sub[32] = {};
                     if (!read_il2cpp_name(pid, obj - poff, sub, sizeof(sub))) continue;
+                    if (std::strstr(sub, "Game") == nullptr && std::strcmp(sub, "BaseWorld") != 0) continue;
                     remember_klass(obj - poff);
                 }
                 continue;
@@ -540,7 +602,7 @@ static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot);
 static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
     if (g_gameplayKlass && slot_from_gameplay(pid, g_gameplayKlass, slot)) return true;
     uint32_t ins[32] = {};
-    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+    if (!esp_mem(pid, func, ins, sizeof(ins))) return false;
     int start = 0;
     for (int i = 0; i < 32; ++i) {
         const uint32_t insn = ins[i];
@@ -587,27 +649,24 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
             const uint32_t byteOff = ((insn >> 10) & 0xFFF) * 8u;
             const uintptr_t src = reg[rn] + byteOff;
             uintptr_t val = 0;
-            if (rd == 0) {
-                if (byteOff == codm_off::kMatchGameField) x0Slot = src;
-                else if (byteOff == 0 && staticBlob) x0Slot = staticBlob + codm_off::kMatchGameField;
-                else x0Slot = src + codm_off::kMatchGameField;
-            }
-            if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
+            if (rd == 0) x0Slot = src;
+            if (!esp_mem(pid, src, val) || !mem_ptr_ok(val)) {
                 known[rd] = false;
                 continue;
             }
             if (rd != 0 && !named_klass(pid, val, "GamePlay")) {
                 staticBlob = val;
                 g_blob = val;
+                g_altSlot = val + codm_off::kMatchGameField;
             }
             if (!loggedPtr) {
                 loggedPtr = true;
                 char txt[24] = {};
                 uintptr_t np = 0;
-                mem_read(pid, val + 0x10, np);
-                if (mem_ptr_ok(np)) mem_read(pid, np, txt, sizeof(txt) - 1);
+                esp_mem(pid, val + 0x10, np);
+                if (mem_ptr_ok(np)) esp_mem(pid, np, txt, sizeof(txt) - 1);
                 uintptr_t q[4] = {};
-                mem_read(pid, val, q, sizeof(q));
+                esp_mem(pid, val, q, sizeof(q));
                 ui_log("[esp] hot ptr=0x%llx +0x10=\"%.16s\" q=%llx %llx %llx %llx", (unsigned long long)val, txt,
                        (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2],
                        (unsigned long long)q[3]);
@@ -644,7 +703,7 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
         slot = x0Slot;
         g_slotHot = true;
         uintptr_t now = 0;
-        mem_read(pid, x0Slot, now);
+        esp_mem(pid, x0Slot, now);
         ui_log("[esp] hot s_MatchGame slot=0x%llx now=0x%llx", (unsigned long long)x0Slot, (unsigned long long)now);
         return true;
     }
@@ -659,11 +718,11 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
 static bool read_il2cpp_name(pid_t pid, uintptr_t klass, char *buf, size_t cap) {
     if (!buf || cap < 2) return false;
     buf[0] = 0;
-    for (uintptr_t off = 0x10; off <= 0x18; off += 8) {
+    for (uintptr_t off = 0x10; off <= 0x30; off += 8) {
         uintptr_t p = 0;
-        if (!mem_read(pid, klass + off, p) || !mem_ptr_ok(p)) continue;
+        if (!esp_mem(pid, klass + off, p) || !mem_ptr_ok(p)) continue;
         char tmp[32] = {};
-        if (!mem_read(pid, p, tmp, sizeof(tmp) - 1)) continue;
+        if (!esp_mem(pid, p, tmp, sizeof(tmp) - 1)) continue;
         bool ok = tmp[0] >= 'A' && tmp[0] <= 'Z';
         size_t n = 0;
         for (; ok && tmp[n] && n < sizeof(tmp) - 1; ++n) {
@@ -679,7 +738,7 @@ static bool read_il2cpp_name(pid_t pid, uintptr_t klass, char *buf, size_t cap) 
 
 static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap) {
     uintptr_t klass = 0;
-    if (!mem_read(pid, obj, klass)) return false;
+    if (!esp_mem(pid, obj, klass)) return false;
     for (int depth = 0; depth < 8 && mem_ptr_ok(klass); ++depth) {
         char name[32] = {};
         if (read_il2cpp_name(pid, klass, name, sizeof(name))) {
@@ -695,7 +754,17 @@ static bool instance_is_match(pid_t pid, uintptr_t obj, char *out, size_t cap) {
             }
         }
         uintptr_t parent = 0;
-        if (!mem_read(pid, klass + 0x48, parent)) break;
+        bool stepped = false;
+        for (uintptr_t poff : {uintptr_t{0x48}, uintptr_t{0x58}, uintptr_t{0x60}, uintptr_t{0x68}}) {
+            uintptr_t p = 0;
+            char pn[32] = {};
+            if (!esp_mem(pid, klass + poff, p) || !mem_ptr_ok(p) || p == klass) continue;
+            if (!read_il2cpp_name(pid, p, pn, sizeof(pn))) continue;
+            parent = p;
+            stepped = true;
+            break;
+        }
+        if (!stepped) break;
         klass = parent;
     }
     return false;
@@ -706,7 +775,7 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
     for (uintptr_t off : prefer) {
         uintptr_t p = 0;
         int sz = 0;
-        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz, false) && sz > 0) {
+        if (esp_mem(pid, obj + off, p) && pawn_list_ok(pid, p, sz, false) && sz > 0) {
             list = p;
             size = sz;
             return true;
@@ -715,7 +784,7 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
     for (uintptr_t off = 0x100; off <= 0x240; off += 8) {
         uintptr_t p = 0;
         int sz = 0;
-        if (mem_read(pid, obj + off, p) && pawn_list_ok(pid, p, sz, true) && sz > 0) {
+        if (esp_mem(pid, obj + off, p) && pawn_list_ok(pid, p, sz, true) && sz > 0) {
             list = p;
             size = sz;
             ui_log("[esp] pawn list at match+0x%llx size=%d", (unsigned long long)off, sz);
@@ -727,7 +796,10 @@ static bool find_pawn_list(pid_t pid, uintptr_t obj, uintptr_t &list, int &size)
 
 static bool read_qword(pid_t pid, uintptr_t addr, uintptr_t &out, bool allowPtrace) {
     out = 0;
-    if (mem_read(pid, addr, out) && mem_ptr_ok(out)) return true;
+    if (esp_mem(pid, addr, out)) {
+        if (mem_ptr_ok(out)) return true;
+        if (out == 0) return false;
+    }
     if (!allowPtrace || g_ptraceWorldTried) return false;
     g_ptraceWorldTried = true;
     if (!mem_read_ptrace(pid, addr, &out, sizeof(out)) || !mem_ptr_ok(out)) {
@@ -744,11 +816,11 @@ static bool world_match(pid_t pid, uintptr_t &match) {
     const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8, 0xD8, 0xE0};
     for (uintptr_t off : offs) {
         uintptr_t sf = 0;
-        if (!mem_read(pid, g_worldKlass + off, sf) || !mem_ptr_ok(sf)) continue;
+        if (!esp_mem(pid, g_worldKlass + off, sf) || !mem_ptr_ok(sf)) continue;
         uintptr_t world = 0;
         if (!read_qword(pid, sf, world, true)) continue;
         uintptr_t mg = 0;
-        if (!mem_read(pid, world + 0x20, mg) || !mem_ptr_ok(mg)) mem_read(pid, world + 0x18, mg);
+        if (!esp_mem(pid, world + 0x20, mg) || !mem_ptr_ok(mg)) esp_mem(pid, world + 0x18, mg);
         if (!mem_ptr_ok(mg)) continue;
         char name[32] = {};
         uintptr_t list = 0;
@@ -772,10 +844,10 @@ static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot) {
     const uintptr_t offs[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8, 0xD8, 0xE0, 0x100, 0x0};
     for (uintptr_t off : offs) {
         uintptr_t base = blob;
-        if (off != 0 && (!mem_read(pid, blob + off, base) || !mem_ptr_ok(base))) continue;
+        if (off != 0 && (!esp_mem(pid, blob + off, base) || !mem_ptr_ok(base))) continue;
         for (uintptr_t field : {codm_off::kMatchGameField, uintptr_t{0}}) {
             uintptr_t obj = 0;
-            if (!mem_read(pid, base + field, obj) || !mem_ptr_ok(obj)) continue;
+            if (!esp_mem(pid, base + field, obj) || !mem_ptr_ok(obj)) continue;
             char name[32] = {};
             uintptr_t list = 0;
             int sz = 0;
@@ -798,7 +870,7 @@ static bool slot_from_blob(pid_t pid, uintptr_t blob, uintptr_t &slot) {
 static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot) {
     uint32_t ins[48] = {};
     if (nins > 48) nins = 48;
-    if (nins < 1 || !mem_read(pid, func, ins, (size_t)nins * 4)) return false;
+    if (nins < 1 || !esp_mem(pid, func, ins, (size_t)nins * 4)) return false;
     uintptr_t reg[32] = {};
     bool known[32] = {};
     slot = 0;
@@ -827,7 +899,7 @@ static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot)
             const uintptr_t src = pc + (uintptr_t)(imm19 * 4);
             if (rd == 0) slot = src;
             uintptr_t val = 0;
-            if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+            if (esp_mem(pid, src, val) && mem_ptr_ok(val)) {
                 reg[rd] = val;
                 known[rd] = true;
             }
@@ -847,7 +919,7 @@ static bool decode_x0_slot(pid_t pid, uintptr_t func, int nins, uintptr_t &slot)
         const uintptr_t src = reg[rn] + ((insn >> 10) & 0xFFF) * 8u;
         uintptr_t val = 0;
         if (rd == 0) slot = src;
-        if (mem_read(pid, src, val) && mem_ptr_ok(val)) {
+        if (esp_mem(pid, src, val) && mem_ptr_ok(val)) {
             reg[rd] = val;
             known[rd] = true;
         } else {
@@ -888,7 +960,7 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
             if (!g_camLogged) {
                 g_camLogged = true;
                 uint32_t w[4] = {};
-                mem_read(pid, g_unity + codm_off::kCamera_get_main, w, sizeof(w));
+                esp_mem(pid, g_unity + codm_off::kCamera_get_main, w, sizeof(w));
                 ui_log("[esp] camera get_main decode fail %08x %08x %08x %08x", w[0], w[1], w[2], w[3]);
             }
             g_camNote = 1;
@@ -897,11 +969,11 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
         g_camSlot = slot;
     }
     uintptr_t cam = 0;
-    if (!mem_read(pid, g_camSlot, cam) || !mem_ptr_ok(cam)) {
+    if (!esp_mem(pid, g_camSlot, cam) || !mem_ptr_ok(cam)) {
         uintptr_t worldSlot = 0;
         uintptr_t world = 0;
         if (cam_slot_of(pid, g_unity + codm_off::kPlayerCamera_get_WorldCamera, 40, worldSlot) &&
-            mem_read(pid, worldSlot, world) && mem_ptr_ok(world)) {
+            esp_mem(pid, worldSlot, world) && mem_ptr_ok(world)) {
             g_camSlot = worldSlot;
             cam = world;
         } else {
@@ -918,7 +990,7 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
     int nativeN = 0;
     for (uintptr_t off = 0x10; off <= 0x30 && nativeN < 5; off += 8) {
         uintptr_t p = 0;
-        if (!mem_read(pid, cam + off, p) || !mem_ptr_ok(p)) continue;
+        if (!esp_mem(pid, cam + off, p) || p < 0x10000000ULL || !mem_ptr_ok(p)) continue;
         natives[nativeN++] = p;
         if (!native) native = p;
     }
@@ -927,7 +999,7 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
     for (int ni = 0; ni < nativeN; ++ni) {
         const uintptr_t root = natives[ni];
         if (!mem_ptr_ok(root)) continue;
-        if (!mem_read(pid, root, buf, sizeof(buf))) continue;
+        if (!esp_mem(pid, root, buf, sizeof(buf))) continue;
         int viewOff = -1;
         int projOff = -1;
         for (int off = 0; off + 64 <= (int)sizeof(buf); off += 4) {
@@ -966,27 +1038,43 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
     uintptr_t worldSlot = 0;
     uintptr_t world = 0;
     if (g_camSlot && cam_slot_of(pid, g_unity + codm_off::kPlayerCamera_get_WorldCamera, 40, worldSlot) &&
-        worldSlot != g_camSlot && mem_read(pid, worldSlot, world) && mem_ptr_ok(world)) {
+        worldSlot != g_camSlot && esp_mem(pid, worldSlot, world) && mem_ptr_ok(world)) {
         ui_log("[esp] camera switch WorldCamera slot=0x%llx now=0x%llx", (unsigned long long)worldSlot,
                (unsigned long long)world);
         g_camSlot = worldSlot;
         g_camNote = 0;
         return;
     }
+    if (g_camKlass) {
+        const uintptr_t soff[] = {0xB8, 0xA0, 0xC8, 0x80, 0xF8, 0xD8};
+        for (uintptr_t off : soff) {
+            uintptr_t sf = 0;
+            uintptr_t worldCam = 0;
+            if (!esp_mem(pid, g_camKlass + off, sf) || !mem_ptr_ok(sf)) continue;
+            if (!esp_mem(pid, sf + codm_off::kWorldCameraField, worldCam) || !mem_ptr_ok(worldCam)) continue;
+            if (worldCam == cam) break;
+            ui_log("[esp] ptrace PlayerCamera world=0x%llx slot=0x%llx", (unsigned long long)worldCam,
+                   (unsigned long long)(sf + codm_off::kWorldCameraField));
+            g_camSlot = sf + codm_off::kWorldCameraField;
+            g_camNote = 0;
+            g_camLogged = false;
+            return;
+        }
+    }
     if (g_camNote != 3) {
         g_camNote = 3;
         char camName[32] = {};
         uintptr_t camKlass = 0;
-        mem_read(pid, cam, camKlass);
-        read_il2cpp_name(pid, camKlass, camName, sizeof(camName));
-        ui_log("[esp] camera=0x%llx klass=%s native=0x%llx vp miss", (unsigned long long)cam,
+        esp_mem(pid, cam, camKlass);
+        if (mem_ptr_ok(camKlass)) read_il2cpp_name(pid, camKlass, camName, sizeof(camName));
+        ui_log("[esp] ptrace camera=0x%llx klass=%s native=0x%llx vp miss", (unsigned long long)cam,
                camName[0] ? camName : "?", (unsigned long long)native);
     }
 }
 
 static bool read_vec3(pid_t pid, uintptr_t addr, float &x, float &y, float &z) {
     float v[3] = {};
-    if (!mem_read(pid, addr, v, sizeof(v))) return false;
+    if (!esp_mem(pid, addr, v, sizeof(v))) return false;
     if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) return false;
     if (std::fabs(v[0]) > 200000.f || std::fabs(v[1]) > 200000.f || std::fabs(v[2]) > 200000.f) return false;
     x = v[0];
@@ -1000,12 +1088,12 @@ static void read_nick(pid_t pid, uintptr_t pawn, char *out, size_t cap) {
     out[0] = 0;
     uintptr_t info = 0;
     uintptr_t str = 0;
-    if (!mem_read(pid, pawn + codm_off::kPawn_m_PlayerInfo, info) || !mem_ptr_ok(info)) return;
-    if (!mem_read(pid, info + codm_off::kPlayerInfo_Nick, str) || !mem_ptr_ok(str)) return;
+    if (!esp_mem(pid, pawn + codm_off::kPawn_m_PlayerInfo, info) || !mem_ptr_ok(info)) return;
+    if (!esp_mem(pid, info + codm_off::kPlayerInfo_Nick, str) || !mem_ptr_ok(str)) return;
     int32_t len = 0;
-    if (!mem_read(pid, str + 0x10, len) || len <= 0 || len > 20) return;
+    if (!esp_mem(pid, str + 0x10, len) || len <= 0 || len > 20) return;
     uint16_t chars[20] = {};
-    if (!mem_read(pid, str + 0x14, chars, (size_t)len * 2)) return;
+    if (!esp_mem(pid, str + 0x14, chars, (size_t)len * 2)) return;
     size_t n = 0;
     for (int i = 0; i < len && n + 1 < cap; ++i) {
         const uint16_t c = chars[i];
@@ -1090,6 +1178,12 @@ void codm_reset() {
     g_scanMaps.clear();
     g_scanStrs.clear();
     g_scanKlasses.clear();
+    g_strMaps.clear();
+    g_altSlot = 0;
+    g_camKlass = 0;
+    g_ptrHits = 0;
+    g_ptraceLogged = false;
+    g_espPeek = false;
     g_camSlot = 0;
     g_camNote = 0;
     g_camLogged = false;
@@ -1268,7 +1362,7 @@ int codm_auto_patch_unity() {
             continue;
         }
         if (!h.haveOrig) {
-            if (!mem_read(pid, addr, h.orig, sizeof(h.orig))) continue;
+            if (!esp_mem(pid, addr, h.orig, sizeof(h.orig))) continue;
             h.haveOrig = true;
         }
         if (!mem_write(pid, addr, bytes, sizeof(bytes))) {
@@ -1327,17 +1421,18 @@ void codm_tick(CodmFrame &out) {
         std::snprintf(out.status, sizeof(out.status), "waiting com.garena.game.codm");
         return;
     }
-    fill_camera_vp(pid, out);
     codm_auto_patch_unity();
     const int steps = g_scanPhase >= 9 ? 1 : 4;
     for (int step = 0; step < steps; ++step) esp_find_step(pid);
+    PeekScope peek(pid);
+    fill_camera_vp(pid, out);
     if (!g_matchSlot) {
         uintptr_t slot = 0;
         if (resolve_match_slot(pid, g_unity + codm_off::kGameplay_get_MatchGame, slot)) {
             g_matchSlot = slot;
             g_slotLocked = true;
             uintptr_t now = 0;
-            mem_read(pid, g_matchSlot, now);
+            esp_mem(pid, g_matchSlot, now);
             ui_log("[esp] s_MatchGame slot=0x%llx now=0x%llx", (unsigned long long)g_matchSlot,
                    (unsigned long long)now);
         } else {
@@ -1345,7 +1440,7 @@ void codm_tick(CodmFrame &out) {
             if (!logged) {
                 logged = true;
                 uint32_t head[12] = {};
-                mem_read(pid, g_unity + codm_off::kGameplay_get_MatchGame, head, sizeof(head));
+                esp_mem(pid, g_unity + codm_off::kGameplay_get_MatchGame, head, sizeof(head));
                 ui_log("[esp] getter %08x %08x %08x %08x %08x %08x", head[0], head[1], head[2], head[3],
                        head[4], head[5]);
                 ui_log("[esp] getter %08x %08x %08x %08x %08x %08x", head[6], head[7], head[8], head[9],
@@ -1358,18 +1453,18 @@ void codm_tick(CodmFrame &out) {
         }
     }
     uintptr_t match = 0;
-    if (g_matchSlot) mem_read(pid, g_matchSlot, match);
+    if (g_matchSlot) esp_mem(pid, g_matchSlot, match);
     if (!mem_ptr_ok(match) && g_liveMatch) match = g_liveMatch;
     if (!mem_ptr_ok(match)) {
         if (g_liveMatch && !instance_is_match(pid, g_liveMatch, nullptr, 0)) g_liveMatch = 0;
         esp_find_step(pid);
-        if (g_matchSlot) mem_read(pid, g_matchSlot, match);
+        if (g_matchSlot) esp_mem(pid, g_matchSlot, match);
         if (!mem_ptr_ok(match) && g_liveMatch) match = g_liveMatch;
         uintptr_t better = 0;
         uintptr_t obj = 0;
         if (mem_ptr_ok(match)) {
             // live instance or a static field that just became non-null
-        } else if (g_blob && slot_from_blob(pid, g_blob, better) && mem_read(pid, better, obj) && mem_ptr_ok(obj)) {
+        } else if (g_blob && slot_from_blob(pid, g_blob, better) && esp_mem(pid, better, obj) && mem_ptr_ok(obj)) {
             g_matchSlot = better;
             match = obj;
         } else {
@@ -1377,7 +1472,7 @@ void codm_tick(CodmFrame &out) {
             char gameName[32] = {};
             uintptr_t gameList = 0;
             int gameSize = 0;
-            const bool gameOk = g_blob && g_matchSlot != g_blob && mem_read(pid, g_blob, game) && mem_ptr_ok(game) &&
+            const bool gameOk = g_blob && g_matchSlot != g_blob && esp_mem(pid, g_blob, game) && mem_ptr_ok(game) &&
                                 (instance_is_match(pid, game, gameName, sizeof(gameName)) ||
                                  find_pawn_list(pid, game, gameList, gameSize));
             uintptr_t fromWorld = 0;
@@ -1407,7 +1502,7 @@ void codm_tick(CodmFrame &out) {
     int size = 0;
     if (!find_pawn_list(pid, match, listPtr, size)) {
         uintptr_t alt = 0;
-        if (mem_read(pid, g_matchSlot + codm_off::kMatchGameField, alt) && mem_ptr_ok(alt) &&
+        if (esp_mem(pid, g_matchSlot + codm_off::kMatchGameField, alt) && mem_ptr_ok(alt) &&
             find_pawn_list(pid, alt, listPtr, size)) {
             g_matchSlot += codm_off::kMatchGameField;
             match = alt;
@@ -1420,7 +1515,7 @@ void codm_tick(CodmFrame &out) {
             uintptr_t obj = 0;
             uintptr_t lp = 0;
             int sz = 0;
-            if (mem_read(pid, better, obj) && find_pawn_list(pid, obj, lp, sz)) {
+            if (esp_mem(pid, better, obj) && find_pawn_list(pid, obj, lp, sz)) {
                 g_matchSlot = better;
                 match = obj;
                 listPtr = lp;
@@ -1444,61 +1539,104 @@ void codm_tick(CodmFrame &out) {
             match = g_liveMatch;
         }
     }
+    if ((!listPtr || size <= 0) && g_altSlot && g_altSlot != g_matchSlot) {
+        uintptr_t altObj = 0;
+        uintptr_t lp = 0;
+        int sz = 0;
+        if (esp_mem(pid, g_altSlot, altObj) && mem_ptr_ok(altObj) && find_pawn_list(pid, altObj, lp, sz)) {
+            match = altObj;
+            listPtr = lp;
+            size = sz;
+            g_matchSlot = g_altSlot;
+            ui_log("[esp] ptrace alt slot=0x%llx pawns=%d", (unsigned long long)g_altSlot, sz);
+        }
+    }
+    if ((!listPtr || size <= 0) && g_blob) {
+        uintptr_t qs[8] = {};
+        if (esp_mem(pid, g_blob, qs, sizeof(qs))) {
+            static uintptr_t dumped = 0;
+            uintptr_t key = 0;
+            for (int i = 0; i < 8; ++i)
+                if (qs[i]) {
+                    key = qs[i];
+                    break;
+                }
+            if (key && dumped != key) {
+                dumped = key;
+                char names[192] = {};
+                size_t used = 0;
+                for (int i = 0; i < 8 && used + 8 < sizeof(names); ++i) {
+                    char nm[24] = {};
+                    uintptr_t k = 0;
+                    if (mem_ptr_ok(qs[i]) && esp_mem(pid, qs[i], k) && mem_ptr_ok(k))
+                        read_il2cpp_name(pid, k, nm, sizeof(nm));
+                    used += (size_t)std::snprintf(names + used, sizeof(names) - used, " %d:%s", i * 8,
+                                                  nm[0] ? nm : (qs[i] ? "ptr" : "0"));
+                }
+                ui_log("[esp] ptrace static%s", names);
+            }
+            for (int i = 0; i < 8 && (!listPtr || size <= 0); ++i) {
+                uintptr_t lp = 0;
+                int sz = 0;
+                if (!mem_ptr_ok(qs[i]) || !find_pawn_list(pid, qs[i], lp, sz)) continue;
+                match = qs[i];
+                listPtr = lp;
+                size = sz;
+                g_matchSlot = g_blob + (uintptr_t)i * 8;
+                g_slotHot = false;
+                ui_log("[esp] ptrace static+0x%x pawns=%d", i * 8, sz);
+            }
+        }
+    }
     if (!listPtr || size <= 0) {
         g_match = 0;
         static uintptr_t loggedBad = 0;
         if (loggedBad != match) {
             loggedBad = match;
             char name[32] = {};
-            instance_is_match(pid, match, name, sizeof(name));
-            uintptr_t ep = 0;
-            int32_t epSize = -1;
-            uintptr_t epItems = 0;
-            mem_read(pid, match + codm_off::kEnemyPawns, ep);
-            if (mem_ptr_ok(ep)) {
-                mem_read(pid, ep + 0x18, epSize);
-                mem_read(pid, ep + 0x10, epItems);
-            }
-            ui_log("[esp] vm_read ptr=0x%llx klass=%s EnemyPawns=0x%llx size=%d items=0x%llx",
-                   (unsigned long long)match, name[0] ? name : "?", (unsigned long long)ep, epSize,
-                   (unsigned long long)epItems);
+            uintptr_t q[4] = {};
+            esp_mem(pid, match, q, sizeof(q));
+            if (mem_ptr_ok(q[0])) read_il2cpp_name(pid, q[0], name, sizeof(name));
+            ui_log("[esp] ptrace ptr=0x%llx klass=%s q=%llx %llx %llx %llx", (unsigned long long)match,
+                   name[0] ? name : "?", (unsigned long long)q[0], (unsigned long long)q[1],
+                   (unsigned long long)q[2], (unsigned long long)q[3]);
         }
         std::snprintf(out.status, sizeof(out.status), "class scan phase %d", g_scanPhase);
         return;
     }
     if (g_match != match) {
         g_match = match;
-        ui_log("[esp] vm_read MatchGame=0x%llx pawns=%d", (unsigned long long)match, size);
+        ui_log("[esp] ptrace MatchGame=0x%llx pawns=%d", (unsigned long long)match, size);
     }
     out.match = match;
     const char *listName = "pawns";
     out.enemies = size < 0 ? 0 : size;
     if (out.enemies > 0) g_slotLocked = true;
     uintptr_t items = 0;
-    mem_read(pid, listPtr + 0x10, items);
+    esp_mem(pid, listPtr + 0x10, items);
     uintptr_t local = 0;
     float localX = 0, localY = 0, localZ = 0;
     const int n = size < 24 ? size : 24;
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
-        if (!items || !mem_read(pid, items + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn)) continue;
+        if (!items || !esp_mem(pid, items + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn)) continue;
         uint8_t controlled = 0;
-        mem_read(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
+        esp_mem(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
         if (controlled == 1 && !local) local = pawn;
     }
     if (!local) {
         uintptr_t all = 0;
         int allSize = 0;
-        if (mem_read(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize, false)) {
+        if (esp_mem(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize, false)) {
             uintptr_t allItems = 0;
-            mem_read(pid, all + 0x10, allItems);
+            esp_mem(pid, all + 0x10, allItems);
             const int an = allSize < 64 ? allSize : 64;
             for (int i = 0; i < an && !local; ++i) {
                 uintptr_t pawn = 0;
                 uint8_t controlled = 0;
-                if (!allItems || !mem_read(pid, allItems + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn))
+                if (!allItems || !esp_mem(pid, allItems + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn))
                     continue;
-                mem_read(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
+                esp_mem(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
                 if (controlled == 1) local = pawn;
             }
         }
@@ -1506,10 +1644,10 @@ void codm_tick(CodmFrame &out) {
     if (local && (read_vec3(pid, local + codm_off::kPawn_m_LastPawnPos, localX, localY, localZ) ||
                   read_vec3(pid, local + codm_off::kPawn_m_Location, localX, localY, localZ))) {
         float eye = 0.f;
-        mem_read(pid, local + codm_off::kPawn_m_EyeHeight, eye);
+        esp_mem(pid, local + codm_off::kPawn_m_EyeHeight, eye);
         if (!(eye > 0.4f && eye < 3.f)) eye = 1.6f;
         float q[4] = {};
-        if (mem_read(pid, local + codm_off::kPawn_m_AimRotation, q, sizeof(q))) {
+        if (esp_mem(pid, local + codm_off::kPawn_m_AimRotation, q, sizeof(q))) {
             const float len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
             if (len2 > 0.5f && len2 < 1.5f) {
                 out.camX = localX;
@@ -1523,22 +1661,22 @@ void codm_tick(CodmFrame &out) {
     }
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
-        if (!items || !mem_read(pid, items + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn)) continue;
+        if (!items || !esp_mem(pid, items + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn)) continue;
         if (pawn == local) continue;
         uint8_t alive = 0, bot = 0;
-        mem_read(pid, pawn + codm_off::kPawn_m_IsAlive, alive);
-        mem_read(pid, pawn + codm_off::kPawn_m_IsBot, bot);
+        esp_mem(pid, pawn + codm_off::kPawn_m_IsAlive, alive);
+        esp_mem(pid, pawn + codm_off::kPawn_m_IsBot, bot);
         float x = 0, y = 0, z = 0;
         if (!read_vec3(pid, pawn + codm_off::kPawn_m_LastPawnPos, x, y, z))
             read_vec3(pid, pawn + codm_off::kPawn_m_Location, x, y, z);
         float eye = 0.f;
-        mem_read(pid, pawn + codm_off::kPawn_m_EyeHeight, eye);
+        esp_mem(pid, pawn + codm_off::kPawn_m_EyeHeight, eye);
         if (!(eye > 0.4f && eye < 3.f)) eye = 1.6f;
         uintptr_t info = 0;
         float hp = 0.f, maxHp = 0.f;
-        if (mem_read(pid, pawn + codm_off::kAttackableInfo, info) && mem_ptr_ok(info)) {
-            mem_read(pid, info + codm_off::kHealth, hp);
-            mem_read(pid, info + codm_off::kMaxHealth, maxHp);
+        if (esp_mem(pid, pawn + codm_off::kAttackableInfo, info) && mem_ptr_ok(info)) {
+            esp_mem(pid, info + codm_off::kHealth, hp);
+            esp_mem(pid, info + codm_off::kMaxHealth, maxHp);
         }
         CodmEnemy &e = out.list[out.shown];
         e.hp = hp;

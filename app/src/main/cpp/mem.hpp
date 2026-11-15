@@ -36,6 +36,10 @@ bool mem_is_readable(pid_t pid, uintptr_t addr, size_t len);
 bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n);
 /** PTRACE_PEEKDATA. Attaches and detaches. Use for a few words, not every frame. */
 bool mem_read_ptrace(pid_t pid, uintptr_t addr, void *buf, size_t n);
+/** One attach for the ESP sample. Peek while it is held, then detach. */
+bool mem_peek_begin(pid_t pid);
+bool mem_peek(uintptr_t addr, void *buf, size_t n);
+void mem_peek_end();
 bool mem_write(pid_t pid, uintptr_t addr, const void *buf, size_t n);
 /** Last mem_write failure, e.g. "vm=EPERM proc=EACCES ptrace=EPERM". */
 const char *mem_write_error();

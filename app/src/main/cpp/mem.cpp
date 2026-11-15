@@ -104,26 +104,17 @@ bool mem_read(pid_t pid, uintptr_t addr, void *buf, size_t n) {
     return ret == (ssize_t)n;
 }
 
-bool mem_read_ptrace(pid_t pid, uintptr_t addr, void *buf, size_t n) {
-    if (!pid || !addr || !buf || !n) return false;
-    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) return false;
-    int st = 0;
-    if (waitpid(pid, &st, __WALL) < 0) {
-        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
-        return false;
-    }
-    bool ok = true;
+static pid_t g_peekPid = 0;
+
+static bool peek_bytes(pid_t pid, uintptr_t addr, void *buf, size_t n) {
     auto *dst = static_cast<uint8_t *>(buf);
     uintptr_t a = addr;
     size_t left = n;
-    while (left && ok) {
+    while (left) {
         const uintptr_t aligned = a & ~7ULL;
         errno = 0;
         const long word = ptrace(PTRACE_PEEKDATA, pid, reinterpret_cast<void *>(aligned), nullptr);
-        if (errno) {
-            ok = false;
-            break;
-        }
+        if (errno) return false;
         uint8_t bytes[8];
         std::memcpy(bytes, &word, 8);
         const size_t off = (size_t)(a - aligned);
@@ -133,8 +124,46 @@ bool mem_read_ptrace(pid_t pid, uintptr_t addr, void *buf, size_t n) {
         dst += chunk;
         left -= chunk;
     }
+    return true;
+}
+
+bool mem_read_ptrace(pid_t pid, uintptr_t addr, void *buf, size_t n) {
+    if (!pid || !addr || !buf || !n) return false;
+    if (g_peekPid == pid) return peek_bytes(pid, addr, buf, n);
+    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, __WALL) < 0) {
+        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        return false;
+    }
+    const bool ok = peek_bytes(pid, addr, buf, n);
     ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
     return ok;
+}
+
+bool mem_peek_begin(pid_t pid) {
+    if (!pid) return false;
+    if (g_peekPid == pid) return true;
+    if (g_peekPid) mem_peek_end();
+    if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) < 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, __WALL) < 0) {
+        ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+        return false;
+    }
+    g_peekPid = pid;
+    return true;
+}
+
+bool mem_peek(uintptr_t addr, void *buf, size_t n) {
+    if (!g_peekPid || !addr || !buf || !n) return false;
+    return peek_bytes(g_peekPid, addr, buf, n);
+}
+
+void mem_peek_end() {
+    if (!g_peekPid) return;
+    ptrace(PTRACE_DETACH, g_peekPid, nullptr, nullptr);
+    g_peekPid = 0;
 }
 
 static char g_writeErr[160] = "ok";

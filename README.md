@@ -1,20 +1,36 @@
-# CODM jnmaini (source)
+# CODM External APK
 
-Native inject menu from **jnmaini.zip** — same `jni/` tree, no external overlay APK and no launcher login.
+External overlay for **Call of Duty Mobile** (`com.garena.game.codm`), modeled on **mlbb-esp-pure**:
 
-| Output | Path after build |
-|--------|------------------|
-| arm64 lib | `libs/arm64-v8a/libZAGll.so` |
+| Layer | Role |
+|--------|------|
+| **APK** | Floating ImGui overlay (no in-game inject, no license gate) |
+| **Native** | Attach to game PID, read `libunity.so`, remote-call IL2CPP methods via **hardcoded RVAs** (`vendor/jnmaini/CLASS.h`) — no IL2CPP parser in the overlay |
+| **ANOGS** | Auto-patch `BYPASS()` sites from `vendor/jnmaini/hooks.h` (MOV X0,#0; RET) when enabled in menu |
+| **jni/** | Full **jnmaini.zip** reference tree (internal mod); sync hooks/offsets from here into `vendor/` |
 
-## Build (local)
+## Menu (overlay)
+
+- Auto-find / attach CODM (GSpace-friendly scoring)
+- Toggle auto anogs patch
+- Status: PID, `libunity` / `libanogs` base, enemy pawn count via `MatchGame` + `EnemyPawns`
+
+Gameplay hooks (speed, recoil, etc.) from jnmaini still need an **in-process** agent; this build is **external read + anogs patch + menu** first.
+
+## Regenerate anogs patches
 
 ```bash
-export ANDROID_NDK_HOME=/path/to/ndk
-$ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk NDK_APPLICATION_MK=jni/Application.mk -C jni
+python3 tools/sync_anogs_bypass.py
 ```
 
-## Use
+Reads `vendor/jnmaini/hooks.h`, writes `app/src/main/cpp/anogs_patch.cpp`.
 
-Inject `libZAGll.so` into `com.garena.game.codm` the same way as the original jnmaini build. Menu is in-game (logo tap); hooks/offsets live in `jni/ImGui/hooks.h` and `jni/ImGui/CLASS.h`.
+## Build
 
-CI uploads **libZAGll-arm64** on each push to `main`.
+```bash
+./gradlew assembleRelease
+```
+
+CI: **Build APK** → artifact `codm-external-release`.
+
+Package: `com.xorel.codm.external`

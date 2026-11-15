@@ -654,9 +654,12 @@ static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
                 continue;
             }
             if (rd != 0 && !named_klass(pid, val, "GamePlay")) {
-                staticBlob = val;
-                g_blob = val;
-                g_altSlot = val + codm_off::kMatchGameField;
+                const bool inUnity = g_unity && val >= g_unity && val < g_unity + 0x30000000ULL;
+                if (!g_blob || inUnity) {
+                    staticBlob = val;
+                    g_blob = val;
+                    g_altSlot = val + codm_off::kMatchGameField;
+                }
             }
             if (!loggedPtr) {
                 loggedPtr = true;
@@ -985,16 +988,21 @@ static void fill_camera_vp(pid_t pid, CodmFrame &out) {
         }
     }
     uintptr_t native = 0;
-    uintptr_t natives[6] = {};
+    uintptr_t natives[10] = {};
     int nativeN = 0;
-    for (uintptr_t off = 0x10; off <= 0x30 && nativeN < 5; off += 8) {
-        uintptr_t p = 0;
-        if (!esp_mem(pid, cam + off, p) || p < 0x10000000ULL || !mem_ptr_ok(p)) continue;
+    auto push_native = [&](uintptr_t p) {
+        if (nativeN >= 9 || !mem_ptr_ok(p) || !mem_is_readable(pid, p, 0x80)) return;
+        for (int i = 0; i < nativeN; ++i)
+            if (natives[i] == p) return;
         natives[nativeN++] = p;
-        if (!native) native = p;
+        if (!native && p != cam) native = p;
+    };
+    for (uintptr_t off = 0x10; off <= 0x80; off += 8) {
+        uintptr_t p = 0;
+        if (esp_mem(pid, cam + off, p)) push_native(p);
     }
-    natives[nativeN++] = cam;
-    uint8_t buf[0x1000] = {};
+    push_native(cam);
+    uint8_t buf[0x1800] = {};
     for (int ni = 0; ni < nativeN; ++ni) {
         const uintptr_t root = natives[ni];
         if (!mem_ptr_ok(root)) continue;
@@ -1611,52 +1619,96 @@ void codm_tick(CodmFrame &out) {
     const char *listName = "pawns";
     out.enemies = size < 0 ? 0 : size;
     if (out.enemies > 0) g_slotLocked = true;
+    if (g_unity && g_blob >= g_unity && g_blob < g_unity + 0x30000000ULL) {
+        uintptr_t obj = 0;
+        uintptr_t lp = 0;
+        int sz = 0;
+        if (esp_mem(pid, g_blob + codm_off::kMatchGameField, obj) && mem_ptr_ok(obj) && obj != match &&
+            find_pawn_list(pid, obj, lp, sz) && sz > 0) {
+            match = obj;
+            listPtr = lp;
+            size = sz;
+            g_matchSlot = g_blob + codm_off::kMatchGameField;
+            g_slotHot = false;
+            out.enemies = sz;
+            out.match = match;
+        }
+    }
     uintptr_t items = 0;
     esp_mem(pid, listPtr + 0x10, items);
     uintptr_t local = 0;
     float localX = 0, localY = 0, localZ = 0;
+    int localScore = 1000;
     const int n = size < 24 ? size : 24;
+    auto consider = [&](uintptr_t pawn) {
+        if (!mem_ptr_ok(pawn)) return;
+        int score = 1000;
+        uint8_t controlled = 0;
+        if (esp_mem(pid, pawn + codm_off::kPawn_m_IsControlled, controlled) && controlled == 1) score = 0;
+        float camDist = 9999.f;
+        if (esp_mem(pid, pawn + 0x134, camDist) && std::isfinite(camDist) && camDist >= 0.f && camDist < 3.f)
+            score = score < 50 ? score : 10 + (int)(camDist * 10.f);
+        if (score >= localScore) return;
+        float x = 0, y = 0, z = 0;
+        if (!read_vec3(pid, pawn + codm_off::kPawn_m_LastPawnPos, x, y, z) &&
+            !read_vec3(pid, pawn + codm_off::kPawn_m_Location, x, y, z))
+            return;
+        local = pawn;
+        localScore = score;
+        localX = x;
+        localY = y;
+        localZ = z;
+    };
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
-        if (!items || !esp_mem(pid, items + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn)) continue;
-        uint8_t controlled = 0;
-        esp_mem(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
-        if (controlled == 1 && !local) local = pawn;
+        if (!items || !esp_mem(pid, items + 0x20 + (uintptr_t)i * 8, pawn)) continue;
+        consider(pawn);
     }
-    if (!local) {
-        uintptr_t all = 0;
-        int allSize = 0;
-        if (esp_mem(pid, match + codm_off::kAllPawns, all) && pawn_list_ok(pid, all, allSize, false)) {
-            uintptr_t allItems = 0;
-            esp_mem(pid, all + 0x10, allItems);
-            const int an = allSize < 64 ? allSize : 64;
-            for (int i = 0; i < an && !local; ++i) {
-                uintptr_t pawn = 0;
-                uint8_t controlled = 0;
-                if (!allItems || !esp_mem(pid, allItems + 0x20 + (uintptr_t)i * 8, pawn) || !mem_ptr_ok(pawn))
-                    continue;
-                esp_mem(pid, pawn + codm_off::kPawn_m_IsControlled, controlled);
-                if (controlled == 1) local = pawn;
-            }
+    for (uintptr_t listOff : {codm_off::kAllPawns, uintptr_t{0x170}}) {
+        uintptr_t alt = 0;
+        int altSize = 0;
+        if (!esp_mem(pid, match + listOff, alt) || !pawn_list_ok(pid, alt, altSize, false)) continue;
+        uintptr_t altItems = 0;
+        esp_mem(pid, alt + 0x10, altItems);
+        const int an = altSize < 64 ? altSize : 64;
+        for (int i = 0; i < an; ++i) {
+            uintptr_t pawn = 0;
+            if (!altItems || !esp_mem(pid, altItems + 0x20 + (uintptr_t)i * 8, pawn)) continue;
+            consider(pawn);
         }
     }
-    if (local && (read_vec3(pid, local + codm_off::kPawn_m_LastPawnPos, localX, localY, localZ) ||
-                  read_vec3(pid, local + codm_off::kPawn_m_Location, localX, localY, localZ))) {
+    if (local) {
         float eye = 0.f;
         esp_mem(pid, local + codm_off::kPawn_m_EyeHeight, eye);
         if (!(eye > 0.4f && eye < 3.f)) eye = 1.6f;
         float q[4] = {};
-        if (esp_mem(pid, local + codm_off::kPawn_m_AimRotation, q, sizeof(q))) {
+        bool quat = false;
+        for (uintptr_t qoff : {codm_off::kPawn_m_AimRotation, uintptr_t{0x3B8}}) {
+            if (!esp_mem(pid, local + qoff, q, sizeof(q))) continue;
             const float len2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
             if (len2 > 0.5f && len2 < 1.5f) {
-                out.camX = localX;
-                out.camY = localY + eye;
-                out.camZ = localZ;
-                basis_from_quat(q[0], q[1], q[2], q[3], out.fx, out.fy, out.fz, out.rx, out.ry, out.rz, out.ux,
-                                out.uy, out.uz);
-                out.viewOk = 1;
+                quat = true;
+                break;
             }
         }
+        out.camX = localX;
+        out.camY = localY + eye;
+        out.camZ = localZ;
+        if (quat) {
+            basis_from_quat(q[0], q[1], q[2], q[3], out.fx, out.fy, out.fz, out.rx, out.ry, out.rz, out.ux, out.uy,
+                            out.uz);
+        } else {
+            out.fx = 0.f;
+            out.fy = 0.f;
+            out.fz = 1.f;
+            out.rx = 1.f;
+            out.ry = 0.f;
+            out.rz = 0.f;
+            out.ux = 0.f;
+            out.uy = 1.f;
+            out.uz = 0.f;
+        }
+        if (!out.vpOk) out.viewOk = 1;
     }
     for (int i = 0; i < n; ++i) {
         uintptr_t pawn = 0;
@@ -1697,8 +1749,8 @@ void codm_tick(CodmFrame &out) {
     static int loggedN = -1;
     if (loggedN != size) {
         loggedN = size;
-        ui_log("[esp] %s=%d shown=%d local=%s view=%d", listName, size, out.shown, local ? "yes" : "no",
-               out.viewOk);
+        ui_log("[esp] %s=%d shown=%d local=%s view=%d pos=%.1f %.1f %.1f", listName, size, out.shown,
+               local ? "yes" : "no", out.viewOk ? 1 : 0, localX, localY, localZ);
     }
     std::snprintf(out.status, sizeof(out.status), "%s=%d shown=%d view=%s anogs=%s", listName, size, out.shown,
                   out.viewOk ? "ok" : "no-aim", g_anogsPatched ? "patched" : "raw");

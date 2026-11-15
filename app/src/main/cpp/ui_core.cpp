@@ -253,8 +253,10 @@ static void draw_world_esp(const CodmFrame &f) {
     char head[48];
     std::snprintf(head, sizeof(head), "ENEMIES %d", f.enemies);
     dl->AddText(ImVec2(g_w * 0.5f - 36.f, 36.f), IM_COL32(255, 255, 255, 230), head);
-    const bool master = checkboxStates["ESP ENABLE"];
-    if (!master || (!f.viewOk && !f.vpOk)) return;
+    const bool enable = checkboxStates["ESP ENABLE"];
+    const bool box = enable || checkboxStates["ESP BOX"] || checkboxStates["3D::BOX"];
+    const bool line = enable || checkboxStates["ESP LINE"];
+    if ((!box && !line) || (!f.viewOk && !f.vpOk)) return;
     const bool name = checkboxStates["ESP NAME"];
     const bool dist = checkboxStates["ESP DISTANCE"];
     for (int i = 0; i < f.shown; ++i) {
@@ -270,8 +272,8 @@ static void draw_world_esp(const CodmFrame &f) {
         if (bh < 2.f || bh > g_h * 2.f) continue;
         const float bw = bh * 0.45f;
         const ImU32 col = e.bot ? IM_COL32(80, 220, 255, 230) : IM_COL32(255, 70, 70, 230);
-        dl->AddLine(ImVec2(g_w * 0.5f, 8.f), ImVec2(hx, top), col, 1.2f);
-        {
+        if (line) dl->AddLine(ImVec2(g_w * 0.5f, 8.f), ImVec2(hx, top), col, 1.2f);
+        if (box) {
             const ImVec2 a(hx - bw * 0.5f, top);
             const ImVec2 b(hx + bw * 0.5f, bot);
             dl->AddRect(a, b, col, 0.f, 0, 1.4f);

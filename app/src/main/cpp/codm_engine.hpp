@@ -5,16 +5,27 @@
 struct CodmEnemy {
     float hp = 0.f;
     float maxHp = 0.f;
+    float dist = 0.f;
+    float x = 0.f, y = 0.f, z = 0.f;
+    float head = 0.f;
     int alive = 0;
+    int bot = 0;
+    char name[24] = {};
 };
 
 struct CodmFrame {
     pid_t pid = 0;
     uintptr_t unity = 0;
     uintptr_t anogs = 0;
+    uintptr_t match = 0;
     int enemies = 0;
     int shown = 0;
-    CodmEnemy list[12]{};
+    int viewOk = 0;
+    float camX = 0.f, camY = 0.f, camZ = 0.f;
+    float fx = 0.f, fy = 0.f, fz = 1.f;
+    float rx = 1.f, ry = 0.f, rz = 0.f;
+    float ux = 0.f, uy = 1.f, uz = 0.f;
+    CodmEnemy list[24]{};
     char status[128] = {};
 };
 

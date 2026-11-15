@@ -4,6 +4,7 @@
 #include "ui_log.hpp"
 #include "clip_android.hpp"
 #include "jnmaini_ui/jnmaini_menu.hpp"
+#include "jnmaini_ui/weapon_category_config.h"
 #include "imgui.h"
 #include "imgui_impl_android.h"
 #include "imgui_impl_opengl3.h"
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -217,6 +219,72 @@ void jnmaini_draw_external_panel() {
                 (unsigned long long)g_last.anogs, g_last.enemies);
 }
 
+static bool project_esp(const CodmFrame &f, float x, float y, float z, float &sx, float &sy) {
+    if (!f.viewOk || g_w <= 0 || g_h <= 0) return false;
+    const float dx = x - f.camX;
+    const float dy = y - f.camY;
+    const float dz = z - f.camZ;
+    const float vz = dx * f.fx + dy * f.fy + dz * f.fz;
+    if (vz < 0.3f) return false;
+    const float vx = dx * f.rx + dy * f.ry + dz * f.rz;
+    const float vy = dx * f.ux + dy * f.uy + dz * f.uz;
+    const float scale = (g_h * 0.5f) / std::tan(70.f * 0.5f * 3.14159265f / 180.f);
+    sx = g_w * 0.5f + (vx / vz) * scale;
+    sy = g_h * 0.5f - (vy / vz) * scale;
+    return std::isfinite(sx) && std::isfinite(sy);
+}
+
+static void draw_world_esp(const CodmFrame &f) {
+    if (!ImGui::GetCurrentContext()) return;
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+    char head[48];
+    std::snprintf(head, sizeof(head), "ENEMIES %d", f.enemies);
+    dl->AddText(ImVec2(g_w * 0.5f - 36.f, 36.f), IM_COL32(255, 255, 255, 230), head);
+    const bool master = checkboxStates["ESP ENABLE"];
+    if (!master || !f.viewOk) return;
+    const bool name = checkboxStates["ESP NAME"];
+    const bool dist = checkboxStates["ESP DISTANCE"];
+    for (int i = 0; i < f.shown; ++i) {
+        const CodmEnemy &e = f.list[i];
+        if (!e.alive) continue;
+        if (e.x == 0.f && e.y == 0.f && e.z == 0.f) continue;
+        float hx = 0, hy = 0, fx = 0, fy = 0;
+        if (!project_esp(f, e.x, e.head, e.z, hx, hy)) continue;
+        if (!project_esp(f, e.x, e.y, e.z, fx, fy)) continue;
+        (void)fx;
+        const float top = hy < fy ? hy : fy;
+        const float bot = hy < fy ? fy : hy;
+        const float bh = bot - top;
+        if (bh < 2.f || bh > g_h * 2.f) continue;
+        const float bw = bh * 0.45f;
+        const ImU32 col = e.bot ? IM_COL32(80, 220, 255, 230) : IM_COL32(255, 70, 70, 230);
+        dl->AddLine(ImVec2(g_w * 0.5f, 8.f), ImVec2(hx, top), col, 1.2f);
+        {
+            const ImVec2 a(hx - bw * 0.5f, top);
+            const ImVec2 b(hx + bw * 0.5f, bot);
+            dl->AddRect(a, b, col, 0.f, 0, 1.4f);
+        }
+        if (e.maxHp > 1.f) {
+            const float t = e.hp < 0.f ? 0.f : (e.hp > e.maxHp ? 1.f : e.hp / e.maxHp);
+            const float barX = hx - bw * 0.5f - 5.f;
+            dl->AddRectFilled(ImVec2(barX - 3.f, top), ImVec2(barX, bot), IM_COL32(0, 0, 0, 160));
+            dl->AddRectFilled(ImVec2(barX - 3.f, top + bh * (1.f - t)), ImVec2(barX, bot),
+                              IM_COL32(40, 220, 80, 230));
+        }
+        if (name || dist) {
+            char label[48];
+            if (name && dist)
+                std::snprintf(label, sizeof(label), "%s  %.0fm", e.name[0] ? e.name : "enemy", e.dist);
+            else if (name)
+                std::snprintf(label, sizeof(label), "%s", e.name[0] ? e.name : "enemy");
+            else
+                std::snprintf(label, sizeof(label), "%.0fm", e.dist);
+            dl->AddText(ImVec2(hx - bw * 0.5f, top - 14.f), IM_COL32(255, 255, 255, 230), label);
+        }
+    }
+}
+
 void ui_gl_draw_frame() {
     if (!ImGui::GetCurrentContext() || g_w <= 0 || g_h <= 0) return;
     glViewport(0, 0, g_w, g_h);
@@ -227,6 +295,7 @@ void ui_gl_draw_frame() {
     ImGui::NewFrame();
     ImGuiIO &io = ImGui::GetIO();
     if (io.DeltaTime <= 0.f) io.DeltaTime = 1.f / 60.f;
+    draw_world_esp(g_last);
     if (g_last.enemies > 0 || g_last.unity) {
         ImGui::SetNextWindowPos(ImVec2(g_w * 0.5f, 12.f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
         ImGui::SetNextWindowBgAlpha(0.45f);

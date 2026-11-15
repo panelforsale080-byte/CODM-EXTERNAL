@@ -248,7 +248,6 @@ static void draw_world_esp(const CodmFrame &f) {
     const bool dist = checkboxStates["ESP DISTANCE"];
     for (int i = 0; i < f.shown; ++i) {
         const CodmEnemy &e = f.list[i];
-        if (!e.alive) continue;
         if (e.x == 0.f && e.y == 0.f && e.z == 0.f) continue;
         float hx = 0, hy = 0, fx = 0, fy = 0;
         if (!project_esp(f, e.x, e.head, e.z, hx, hy)) continue;

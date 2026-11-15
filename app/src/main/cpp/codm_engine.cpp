@@ -23,6 +23,7 @@ static int g_anogsBypassN = 0;
 static uintptr_t g_match = 0;
 static uintptr_t g_matchSlot = 0;
 static bool g_slotLocked = false;
+static bool g_slotHot = false;
 static bool g_nameScanDone = false;
 static uintptr_t g_gameplayKlass = 0;
 
@@ -271,11 +272,16 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
     std::vector<uintptr_t> strings;
     std::vector<uint8_t> buf(512 * 1024);
     for (const auto &r : maps) {
-        if (r.path.find("libunity.so") == std::string::npos || r.perms[0] != 'r') continue;
-        for (uintptr_t a = r.start; a + sizeof(sig) < r.end && strings.size() < 8;) {
-            const size_t n = std::min(buf.size(), (size_t)(r.end - a));
+        if (r.perms[0] != 'r') continue;
+        const bool meta = r.path.find("metadata") != std::string::npos || r.path.find("libil2cpp") != std::string::npos;
+        if (!meta) continue;
+        const uintptr_t limit = r.start + 48ull * 1024ull * 1024ull;
+        const uintptr_t end = r.end < limit ? r.end : limit;
+        for (uintptr_t a = r.start; a + sizeof(sig) < end && strings.size() < 8;) {
+            const size_t n = std::min(buf.size(), (size_t)(end - a));
             if (!mem_read(pid, a, buf.data(), n)) {
                 a += n ? n : 4096;
+                if (a >= end) break;
                 continue;
             }
             for (size_t i = 0; i + sizeof(sig) <= n && strings.size() < 8; ++i) {
@@ -284,6 +290,7 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
                 strings.push_back(a + i);
             }
             a += n > sizeof(sig) ? n - sizeof(sig) : n;
+            if (a >= end) break;
         }
     }
     if (strings.empty()) return false;
@@ -292,7 +299,9 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
         uint8_t needle[8];
         std::memcpy(needle, &str, 8);
         for (const auto &r : maps) {
-            if (r.path.find("libunity.so") == std::string::npos || r.perms[0] != 'r') continue;
+            if (r.perms[0] != 'r') continue;
+            if (r.path.find("libunity.so") == std::string::npos && r.path.find("libil2cpp") == std::string::npos)
+                continue;
             for (uintptr_t a = r.start; a + 8 < r.end;) {
                 const size_t n = std::min(buf.size(), (size_t)(r.end - a));
                 if (!mem_read(pid, a, buf.data(), n)) {
@@ -319,14 +328,101 @@ static bool klass_from_name_scan(pid_t pid, uintptr_t &klass) {
 
 static bool resolve_match_slot(pid_t pid, uintptr_t func, uintptr_t &slot) {
     if (g_gameplayKlass && slot_from_gameplay(pid, g_gameplayKlass, slot)) return true;
+    uint32_t ins[32] = {};
+    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+    int start = 0;
+    for (int i = 0; i < 32; ++i) {
+        const uint32_t insn = ins[i];
+        const bool tb = (insn & 0x7F000000u) == 0x36000000u || (insn & 0x7F000000u) == 0x37000000u;
+        if (!tb) continue;
+        int32_t imm = (int32_t)((insn >> 5) & 0x3FFF);
+        if (imm & (1 << 13)) imm |= ~((1 << 14) - 1);
+        const int target = i + imm;
+        if (target > i && target < 32) start = target;
+        break;
+    }
+    uintptr_t reg[32] = {};
+    bool known[32] = {};
+    uintptr_t x0Slot = 0;
+    bool loggedPtr = false;
+    for (int i = start; i < 32; ++i) {
+        const uint32_t insn = ins[i];
+        const int rd = insn & 31;
+        const int rn = (insn >> 5) & 31;
+        if (insn == 0xD65F03C0u) break;
+        uintptr_t page = 0;
+        if (arm64_adrp(insn, func + (uintptr_t)i * 4, page)) {
+            reg[rd] = page;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFF800000u) == 0x91000000u && known[rn]) {
+            uint32_t imm = (insn >> 10) & 0xFFF;
+            if (((insn >> 22) & 3) == 1) imm <<= 12;
+            reg[rd] = reg[rn] + imm;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFFE0FFE0u) == 0xAA0003E0u) {
+            const int rm = (insn >> 16) & 31;
+            if (known[rm]) {
+                reg[rd] = reg[rm];
+                known[rd] = true;
+            }
+            continue;
+        }
+        if ((insn & 0xFFC00000u) == 0xF9400000u && known[rn]) {
+            const uint32_t byteOff = ((insn >> 10) & 0xFFF) * 8u;
+            const uintptr_t src = reg[rn] + byteOff;
+            uintptr_t val = 0;
+            if (rd == 0) x0Slot = src;
+            if (!mem_read(pid, src, val) || !mem_ptr_ok(val)) {
+                known[rd] = false;
+                continue;
+            }
+            if (!loggedPtr) {
+                loggedPtr = true;
+                char txt[24] = {};
+                uintptr_t np = 0;
+                mem_read(pid, val + 0x10, np);
+                if (mem_ptr_ok(np)) mem_read(pid, np, txt, sizeof(txt) - 1);
+                ui_log("[esp] hot ptr=0x%llx +0x10=\"%.16s\"", (unsigned long long)val, txt);
+            }
+            if (named_klass(pid, val, "GamePlay")) {
+                g_gameplayKlass = val;
+                if (slot_from_gameplay(pid, val, slot)) return true;
+            }
+            reg[rd] = val;
+            known[rd] = true;
+            continue;
+        }
+        if ((insn & 0xFC000000u) == 0x14000000u) {
+            int32_t imm = insn & 0x03FFFFFF;
+            if (imm & 0x02000000) imm |= ~0x03FFFFFF;
+            const int target = i + imm;
+            if (target > i && target < 32) {
+                i = target - 1;
+                continue;
+            }
+            break;
+        }
+    }
     uintptr_t klass = 0;
     if (klass_from_getter_globals(pid, func, klass)) {
         g_gameplayKlass = klass;
         if (slot_from_gameplay(pid, klass, slot)) return true;
     }
+    if (x0Slot) {
+        slot = x0Slot;
+        g_slotHot = true;
+        uintptr_t now = 0;
+        mem_read(pid, x0Slot, now);
+        ui_log("[esp] hot s_MatchGame slot=0x%llx now=0x%llx", (unsigned long long)x0Slot, (unsigned long long)now);
+        return true;
+    }
     if (!g_nameScanDone) {
         g_nameScanDone = true;
-        ui_log("[esp] scanning libunity for GamePlay");
+        ui_log("[esp] scanning metadata for GamePlay");
         if (klass_from_name_scan(pid, slot)) return true;
     }
     return false;
@@ -399,28 +495,43 @@ static void basis_from_quat(float x, float y, float z, float w, float &fx, float
     uz = 2.f * (y * z + w * x);
 }
 
+enum HookMode { M_TRUE = 1, M_RET, M_SCALE, M_VALUE, M_TIME, M_CONST, M_FPS, M_VEC0, M_SPEED };
+
 struct UnityHook {
     const char *name;
     const char *key;
-    bool slider;
+    HookMode mode;
     uintptr_t rva;
-    uint8_t bytes[8];
-    uint8_t orig[8];
+    float constF;
+    uint8_t orig[16];
     bool haveOrig;
     bool applied;
+    uint32_t stamp;
 };
 
 static UnityHook g_unityHooksTable[] = {
-        {"uav", "ADVANCE::UAV", false, 0x6AE9A70, {0x20, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_shake", "NO::SHAKE", false, 0x669780C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_parachute", "NO::PARACHUTE", false, 0x5A88C48, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_crouch", "NO CROUCH", false, 0x66B882C, {0xC0, 0x03, 0x5F, 0xD6, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_recoil", "NO::RECOIL", true, 0xD535A6C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_spread", "NO::SPREAD", true, 0xD53408C, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_reload", "NO::RELOAD", true, 0xC2B5B58, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_reload_start", "NO::RELOAD", true, 0xC2B5D88, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"no_reload_end", "NO::RELOAD", true, 0xC2B5F90, {0xE0, 0x03, 0x27, 0x1E, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
-        {"fps120", "FRAME120", false, 0xAFAC73C, {0x00, 0x0F, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6}, {}, false, false},
+        {"uav", "ADVANCE::UAV", M_TRUE, 0x6AE9A70, 0, {}, false, false, 0},
+        {"no_shake", "NO::SHAKE", M_CONST, 0x669780C, 0.f, {}, false, false, 0},
+        {"no_parachute", "NO::PARACHUTE", M_RET, 0x5A88C48, 0, {}, false, false, 0},
+        {"no_crouch", "NO CROUCH", M_RET, 0x66B882C, 0, {}, false, false, 0},
+        {"fast_swim", "FAST::SWIM", M_CONST, 0x5597B14, 3.f, {}, false, false, 0},
+        {"hitbox", "HITBOX", M_TRUE, 0xC2BE0C8, 0, {}, false, false, 0},
+        {"no_recoil", "NO::RECOIL", M_SCALE, 0xD535A6C, 0, {}, false, false, 0},
+        {"no_punch", "NO::RECOIL", M_VEC0, 0xD5359E4, 0, {}, false, false, 0},
+        {"no_spread", "NO::SPREAD", M_SCALE, 0xD53408C, 0, {}, false, false, 0},
+        {"no_shot_spread", "NO::SPREAD", M_VEC0, 0xC2BDF40, 0, {}, false, false, 0},
+        {"no_reload", "NO::RELOAD", M_TIME, 0xC2B5B58, 0, {}, false, false, 0},
+        {"no_reload_start", "NO::RELOAD", M_TIME, 0xC2B5D88, 0, {}, false, false, 0},
+        {"no_reload_end", "NO::RELOAD", M_TIME, 0xC2B5F90, 0, {}, false, false, 0},
+        {"fast_scope", "FAST::SCOPE", M_TIME, 0x5474160, 0, {}, false, false, 0},
+        {"fov_br", "FOV", M_VALUE, 0xC0B472C, 0, {}, false, false, 0},
+        {"fov_mp", "FOV1", M_VALUE, 0xC0B4458, 0, {}, false, false, 0},
+        {"snow", "SizeSnow", M_VALUE, 0x53FE7FC, 0, {}, false, false, 0},
+        {"aim_assist", "AIM::ASSIST", M_VALUE, 0x54F0E64, 0, {}, false, false, 0},
+        {"aim_assist_2", "AIM::ASSIST", M_VALUE, 0x66BD5E8, 0, {}, false, false, 0},
+        {"fps", "FRAME120", M_FPS, 0xAFAC73C, 0, {}, false, false, 0},
+        {"speed", "SPEED_HACK", M_SPEED, 0x530EF10, 0.016f, {}, false, false, 0},
+        {"speed_fixed", "SPEED_HACK", M_SPEED, 0x534D8E4, 0.02f, {}, false, false, 0},
 };
 
 static int g_unityHooks = -1;
@@ -431,12 +542,14 @@ void codm_reset() {
     g_match = 0;
     g_matchSlot = 0;
     g_slotLocked = false;
+    g_slotHot = false;
     g_unityHooks = 0;
     g_nameScanDone = false;
     g_gameplayKlass = 0;
     for (auto &h : g_unityHooksTable) {
         h.haveOrig = false;
         h.applied = false;
+        h.stamp = 0;
     }
     g_anogsPatched = false;
     g_anogsBypassN = 0;
@@ -478,12 +591,112 @@ void codm_attach(pid_t pid) {
 
 bool codm_libs_ready() { return g_pid.load() > 0 && g_unity && g_anogs; }
 
-static bool unity_hook_wanted(const UnityHook &h) {
-    if (h.slider) {
-        const auto it = seekbarValues.raw().find(h.key);
-        return it != seekbarValues.raw().end() && it->second > 0.f;
+static float menu_slider(const char *key) {
+    float v = 0.f;
+    const auto it = seekbarValues.raw().find(key);
+    if (it != seekbarValues.raw().end() && it->second > v) v = it->second;
+    for (const auto &c : WeaponCfg::Store()) {
+        float s = 0.f;
+        if (std::strcmp(key, "NO::RECOIL") == 0) s = c.no_recoil;
+        else if (std::strcmp(key, "NO::RELOAD") == 0) s = c.no_reload;
+        else if (std::strcmp(key, "NO::SPREAD") == 0) s = c.no_spread;
+        else if (std::strcmp(key, "FAST::SCOPE") == 0) s = c.fast_scope;
+        else if (std::strcmp(key, "AIM::ASSIST") == 0) s = c.aim_assist;
+        if (s > v) v = s;
     }
-    return checkboxStates[h.key];
+    return v;
+}
+
+static bool menu_on(const char *key) {
+    if (checkboxStates[key]) return true;
+    for (const auto &c : WeaponCfg::Store()) {
+        if (std::strcmp(key, "HITBOX") == 0 && c.hitbox) return true;
+        if (std::strcmp(key, "NO::SHAKE") == 0 && c.no_shake) return true;
+    }
+    return false;
+}
+
+static void put_u32(uint8_t *p, uint32_t w) { std::memcpy(p, &w, 4); }
+
+static void put_f32_ret(uint8_t out[16], float f, uint32_t &stamp) {
+    std::memset(out, 0, 16);
+    put_u32(out, 0x1C000040u);
+    put_u32(out + 4, 0xD65F03C0u);
+    std::memcpy(out + 8, &f, 4);
+    std::memcpy(&stamp, &f, 4);
+}
+
+static bool hook_payload(const UnityHook &h, uint8_t out[16], uint32_t &stamp) {
+    std::memset(out, 0, 16);
+    stamp = 0;
+    switch (h.mode) {
+        case M_TRUE:
+            if (!menu_on(h.key)) return false;
+            put_u32(out, 0xD2800020u);
+            put_u32(out + 4, 0xD65F03C0u);
+            stamp = 1;
+            return true;
+        case M_RET:
+            if (!menu_on(h.key)) return false;
+            put_u32(out, 0xD65F03C0u);
+            put_u32(out + 4, 0xD65F03C0u);
+            stamp = 1;
+            return true;
+        case M_CONST:
+            if (!menu_on(h.key)) return false;
+            put_f32_ret(out, h.constF, stamp);
+            return true;
+        case M_SCALE: {
+            const float s = menu_slider(h.key);
+            if (s <= 0.f) return false;
+            float t = s / 100.f;
+            if (t > 1.f) t = 1.f;
+            put_f32_ret(out, 1.f - t, stamp);
+            return true;
+        }
+        case M_VALUE: {
+            const float s = menu_slider(h.key);
+            if (s <= 0.f) return false;
+            put_f32_ret(out, s, stamp);
+            return true;
+        }
+        case M_TIME: {
+            const float s = menu_slider(h.key);
+            if (s <= 0.f) return false;
+            float t = s / 100.f;
+            if (t > 1.f) t = 1.f;
+            const float sec = t >= 0.99f ? 0.01f : (1.f - t);
+            put_f32_ret(out, sec, stamp);
+            return true;
+        }
+        case M_VEC0: {
+            if (menu_slider(h.key) <= 0.f) return false;
+            put_u32(out, 0x1E2703E0u);
+            put_u32(out + 4, 0x1E2703E1u);
+            put_u32(out + 8, 0xD65F03C0u);
+            stamp = 1;
+            return true;
+        }
+        case M_SPEED: {
+            float s = menu_slider(h.key);
+            if (s <= 0.f) return false;
+            if (s > 100.f) s = 100.f;
+            const float mult = 1.f + (s / 100.f) * 10.f;
+            put_f32_ret(out, h.constF * mult, stamp);
+            return true;
+        }
+        case M_FPS: {
+            int fps = 0;
+            if (checkboxStates["FRAME120"]) fps = 120;
+            else if (checkboxStates["FRAME40"]) fps = 40;
+            if (!fps) return false;
+            put_u32(out, 0xD2800000u | (uint32_t)((unsigned)fps << 5));
+            put_u32(out + 4, 0xD65F03C0u);
+            stamp = (uint32_t)fps;
+            return true;
+        }
+    }
+    return false;
 }
 
 int codm_auto_patch_unity() {
@@ -491,27 +704,41 @@ int codm_auto_patch_unity() {
     if (!pid || !g_unity) return 0;
     int applied = 0;
     for (auto &h : g_unityHooksTable) {
-        const bool want = unity_hook_wanted(h);
+        uint8_t bytes[16] = {};
+        uint32_t stamp = 0;
+        const bool want = hook_payload(h, bytes, stamp);
         const uintptr_t addr = g_unity + h.rva;
-        if (want == h.applied) {
-            if (want) ++applied;
+        if (!want) {
+            if (h.applied && h.haveOrig && mem_write(pid, addr, h.orig, sizeof(h.orig))) {
+                h.applied = false;
+                h.stamp = 0;
+                ui_log("[unity] %s OFF — original restored", h.name);
+            }
             continue;
         }
-        if (want) {
-            if (!h.haveOrig) {
-                if (!mem_read(pid, addr, h.orig, sizeof(h.orig))) continue;
-                h.haveOrig = true;
-            }
-            if (mem_write(pid, addr, h.bytes, sizeof(h.bytes))) {
-                h.applied = true;
-                ++applied;
-                ui_log("[unity] %s ON @ 0x%llx via %s", h.name, (unsigned long long)addr, mem_write_error());
-            } else {
-                ui_log("[unity] %s FAIL @ 0x%llx (%s)", h.name, (unsigned long long)addr, mem_write_error());
-            }
-        } else if (h.haveOrig && mem_write(pid, addr, h.orig, sizeof(h.orig))) {
-            h.applied = false;
-            ui_log("[unity] %s OFF — original restored", h.name);
+        if (h.applied && h.stamp == stamp) {
+            ++applied;
+            continue;
+        }
+        if (!h.haveOrig) {
+            if (!mem_read(pid, addr, h.orig, sizeof(h.orig))) continue;
+            h.haveOrig = true;
+        }
+        if (!mem_write(pid, addr, bytes, sizeof(bytes))) {
+            ui_log("[unity] %s FAIL @ 0x%llx (%s)", h.name, (unsigned long long)addr, mem_write_error());
+            continue;
+        }
+        h.applied = true;
+        h.stamp = stamp;
+        ++applied;
+        if (h.mode == M_SCALE || h.mode == M_VALUE || h.mode == M_TIME || h.mode == M_CONST || h.mode == M_SPEED) {
+            float shown = 0.f;
+            std::memcpy(&shown, &stamp, 4);
+            ui_log("[unity] %s = %.3f @ 0x%llx", h.name, shown, (unsigned long long)addr);
+        } else if (h.mode == M_FPS) {
+            ui_log("[unity] fps = %u @ 0x%llx", stamp, (unsigned long long)addr);
+        } else {
+            ui_log("[unity] %s ON @ 0x%llx", h.name, (unsigned long long)addr);
         }
     }
     g_unityHooks = applied;
@@ -599,7 +826,7 @@ void codm_tick(CodmFrame &out) {
             loggedBad = match;
             ui_log("[esp] vm_read ptr=0x%llx has no pawn list", (unsigned long long)match);
         }
-        if (!g_gameplayKlass) {
+        if (!g_gameplayKlass && !g_slotHot) {
             g_matchSlot = 0;
             g_slotLocked = false;
         }
